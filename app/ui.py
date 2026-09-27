@@ -20,6 +20,7 @@ from services.piper_service import (
     generate_batch_voices,
     wav_info,
 )
+from services.ffmpeg_service import FFmpegService
 from services.srt_service import SRTService, SRTParseError
 from services.video_service import VideoService, VideoLoadError
 
@@ -32,6 +33,7 @@ class VideoVoiceEditorApp:
         self.state = AppState()
         self.video_service = VideoService()
         self.piper_service = PiperService()
+        self.ffmpeg_service = FFmpegService()
         self._piper_load_thread = None
         self._piper_result_queue = queue.Queue()
         self._piper_voices = []
@@ -50,6 +52,12 @@ class VideoVoiceEditorApp:
         self.btn_generate_all = None
         self.btn_cancel_batch = None
         self.batch_progress = None
+        # PLAN 12 audio composition state
+        self._compose_thread = None
+        self._compose_result_queue = queue.Queue()
+        self._compose_generating = False
+        self._compose_request_id = None
+        self.btn_compose_audio = None
         self._srt_load_thread = None
         self._srt_result_queue = queue.Queue()
         self._batch_insert_index = 0
@@ -850,6 +858,7 @@ class VideoVoiceEditorApp:
                 self._drag_subtitle.start_ms = new_start_ms
                 self._drag_subtitle.end_ms = new_end_ms
                 self.state.invalidate_subtitle_audio(self._drag_subtitle.index)
+                self._update_compose_button_state()
                 self._rebuild_timeline()
                 # Update Treeview
                 for item in self.subtitle_tree.get_children():
@@ -979,6 +988,13 @@ class VideoVoiceEditorApp:
             frame, orient=tk.HORIZONTAL, mode="determinate"
         )
         self.batch_progress.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self.btn_compose_audio = ttk.Button(
+            frame,
+            text="Compose Audio",
+            command=self._on_compose_audio,
+            state=tk.DISABLED,
+        )
+        self.btn_compose_audio.pack(fill=tk.X, padx=10, pady=(0, 5))
         self._start_piper_discovery()
 
     def _start_piper_discovery(self):
@@ -1281,10 +1297,12 @@ class VideoVoiceEditorApp:
         """Enable Generate All Voices only when subtitles + voice are ready."""
         if self.btn_generate_all is None:
             return
-        if self._batch_generating:
+        if self._batch_generating or self._compose_generating:
             self.btn_generate_all.config(state=tk.DISABLED)
             if self.btn_cancel_batch is not None:
-                self.btn_cancel_batch.config(state=tk.NORMAL)
+                self.btn_cancel_batch.config(
+                    state=tk.NORMAL if self._batch_generating else tk.DISABLED
+                )
             return
         ready = bool(self.state.subtitles) and self.state.selected_voice is not None
         self.btn_generate_all.config(state=tk.NORMAL if ready else tk.DISABLED)
@@ -1293,7 +1311,7 @@ class VideoVoiceEditorApp:
 
     def _on_generate_all_voices(self):
         """Capture the full subtitle work list and start the batch worker."""
-        if self._batch_generating:
+        if self._batch_generating or self._compose_generating:
             return
         voice = self.state.selected_voice
         if voice is None:
@@ -1322,6 +1340,7 @@ class VideoVoiceEditorApp:
         self._batch_cancel_event = threading.Event()
         self._batch_generating = True
         self._update_batch_button_state()
+        self._update_compose_button_state()
         if self.batch_progress is not None:
             self.batch_progress.config(maximum=len(work_items), value=0)
         self._update_status(f"Generating voices 1/{len(work_items)}...")
@@ -1391,6 +1410,8 @@ class VideoVoiceEditorApp:
                     self.state.audio_voice_name = getattr(
                         self.state.selected_voice, "name", None
                     )
+                    # Fresh WAVs invalidate any previous composition.
+                    self.state.clear_composed_audio()
                     total = len(success_map) + len(errors)
                     note = " (cancelled)" if cancelled else ""
                     self._update_status(
@@ -1407,10 +1428,144 @@ class VideoVoiceEditorApp:
                     if self.batch_progress is not None:
                         self.batch_progress.config(value=len(success_map))
                     self._update_batch_button_state()
+                    self._update_compose_button_state()
         except queue.Empty:
             pass
         if self._batch_generating:
             self.root.after(100, lambda _bid=batch_id: self._check_batch_result(_bid))
+
+    def _update_compose_button_state(self):
+        """Enable Compose Audio only when video + full voice mapping are ready."""
+        if self.btn_compose_audio is None:
+            return
+        if self._compose_generating or self._batch_generating:
+            self.btn_compose_audio.config(state=tk.DISABLED)
+            return
+        ready = (
+            self.state.video_duration_ms > 0
+            and bool(self.state.subtitles)
+            and all(
+                sub.index in self.state.subtitle_audio_paths
+                for sub in self.state.subtitles
+            )
+        )
+        self.btn_compose_audio.config(state=tk.NORMAL if ready else tk.DISABLED)
+
+    def _on_compose_audio(self):
+        """Capture composition inputs and start the FFmpeg worker."""
+        if self._compose_generating or self._batch_generating:
+            return
+        if self.state.video_duration_ms <= 0:
+            self._update_status("Please load a video first.")
+            messagebox.showinfo("Compose Audio", "Please load a video first.")
+            return
+        if not self.state.subtitles:
+            self._update_status("No subtitles loaded.")
+            messagebox.showinfo("Compose Audio", "Please load an SRT file first.")
+            return
+        missing = [
+            sub.index for sub in self.state.subtitles
+            if sub.index not in self.state.subtitle_audio_paths
+        ]
+        if missing:
+            self._update_status(
+                f"Missing voice audio for subtitles: {missing[:10]}"
+            )
+            messagebox.showinfo(
+                "Compose Audio",
+                "Some subtitles have no generated voice audio.\n"
+                f"Missing: {missing[:10]}\n"
+                "Run Generate All Voices first.",
+            )
+            return
+
+        segments = [
+            {"index": sub.index, "start_ms": sub.start_ms, "end_ms": sub.end_ms}
+            for sub in self.state.subtitles
+        ]
+        audio_mapping = dict(self.state.subtitle_audio_paths)
+        request_id = uuid.uuid4().hex[:8]
+        self._compose_request_id = request_id
+        project_root = Path(__file__).resolve().parent.parent
+        output_path = project_root / "temp" / "composed" / f"audio_{request_id}.wav"
+        print("[AUDIO COMPOSE]")
+        print(f"request_id={request_id}")
+        print(f"subtitle_count={len(segments)}")
+        print(f"output={output_path}")
+
+        self._compose_generating = True
+        self._update_compose_button_state()
+        self._update_batch_button_state()
+        self._update_status("Validating audio...")
+
+        self._compose_thread = threading.Thread(
+            target=self._compose_worker,
+            args=(request_id, self.state.video_duration_ms,
+                  segments, audio_mapping, str(output_path)),
+            daemon=True,
+        )
+        self._compose_thread.start()
+        self.root.after(100, lambda _rid=request_id: self._check_compose_result(_rid))
+
+    def _compose_worker(self, request_id, video_duration_ms,
+                        segments, audio_mapping, output_path):
+        """Run FFmpeg composition off the Tkinter main thread."""
+        try:
+            self._compose_result_queue.put(("status", request_id, "Composing audio..."))
+            self._compose_result_queue.put(
+                ("status", request_id, "Mixing subtitle audio...")
+            )
+            result_path = self.ffmpeg_service.compose_subtitle_audio(
+                video_duration_ms=video_duration_ms,
+                segments=segments,
+                audio_mapping=audio_mapping,
+                output_wav=output_path,
+                request_id=request_id,
+            )
+            info = wav_info(str(result_path))
+            self._compose_result_queue.put(
+                ("done", request_id, str(result_path), info["duration_s"])
+            )
+        except Exception as exc:
+            self._compose_result_queue.put(("failed", request_id, str(exc)))
+
+    def _check_compose_result(self, request_id=None):
+        """Consume composition results on the Tkinter main thread."""
+        try:
+            while True:
+                item = self._compose_result_queue.get_nowait()
+                kind = item[0]
+                if request_id is not None and item[1] != request_id:
+                    print(f"[AUDIO COMPOSE] ignoring stale result request_id={item[1]}")
+                    continue
+                if kind == "status":
+                    self._update_status(item[2])
+                elif kind == "done":
+                    _, _, output_path, duration_s = item
+                    self.state.composed_audio_path = output_path
+                    self.state.composed_audio_duration_s = duration_s
+                    self.state.composed_audio_request_id = request_id
+                    self._update_status("Audio composition complete")
+                    print("[AUDIO COMPOSE]")
+                    print(f"request_id={request_id}")
+                    print(f"composed={output_path} duration={duration_s}s")
+                    self._compose_generating = False
+                    self._update_compose_button_state()
+                    self._update_batch_button_state()
+                elif kind == "failed":
+                    _, _, error = item
+                    self.state.clear_composed_audio()
+                    self._update_status(f"Audio composition failed: {error}")
+                    messagebox.showerror(
+                        "Compose Audio", f"Audio composition failed:\n{error}"
+                    )
+                    self._compose_generating = False
+                    self._update_compose_button_state()
+                    self._update_batch_button_state()
+        except queue.Empty:
+            pass
+        if self._compose_generating:
+            self.root.after(100, lambda _rid=request_id: self._check_compose_result(_rid))
 
     def _create_status_bar(self, parent):
         """Create status bar at bottom"""
@@ -1529,6 +1684,7 @@ class VideoVoiceEditorApp:
             self._update_position_display()
             self._rebuild_timeline()
             self._update_status("Video loaded")
+            self._update_compose_button_state()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load video")
@@ -1544,6 +1700,8 @@ class VideoVoiceEditorApp:
         self.state.video_duration_ms = metadata.duration_ms
         self.state.video_has_audio = metadata.has_audio
         self.state.video_first_frame_path = metadata.first_frame_path
+        # A new video invalidates any previous composition.
+        self.state.clear_composed_audio()
         # Reset playback state for new video
         self.state.clear_playback_state()
 
@@ -2061,6 +2219,7 @@ class VideoVoiceEditorApp:
             # Rebuild timeline to show subtitle blocks
             self._rebuild_timeline()
             self._update_batch_button_state()
+            self._update_compose_button_state()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load SRT: {error_msg}")
@@ -2289,6 +2448,7 @@ class VideoVoiceEditorApp:
             
             # Generated audio for this subtitle is stale after any edit.
             self.state.invalidate_subtitle_audio(subtitle.index)
+            self._update_compose_button_state()
             # Update timeline block
             self._rebuild_timeline()
             self._update_status(f"Updated {col_name} for subtitle {subtitle.index}")

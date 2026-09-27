@@ -1,0 +1,74 @@
+PLAN 12 RESULT (FFmpeg audio composition)
+
+1. Date
+2026-09-27
+
+2. Status
+PARTIAL (code complete; no runtime verification possible here).
+
+3. What was implemented
+- services/ffmpeg_service.py (placeholder replaced; old NotImplementedError
+  PLAN 13 methods kept untouched): FFmpegComposeError; build_compose_command()
+  pure function (validation + argv + filter graph, no subprocess/fs writes);
+  compose_subtitle_audio() (exe discovery, mkdir, run, verify); FFmpegService
+  gains find_ffmpeg() + compose_subtitle_audio() delegating to the functions.
+  No Tkinter dependency; no shell=True; returncode/stdout/stderr captured.
+- Design: per input aformat(s16/48k/stereo) -> adelay=start_ms per channel ->
+  apad to full duration -> amix(inputs=N,longest,no-normalize) mixing overlaps
+  -> atrim to video duration -> final aformat; encode pcm_s16le 48k stereo.
+  Voice audio never stretched/modified; source PLAN 11 WAVs never touched;
+  gaps stay silent; output temp/composed/audio_<request_id>.wav.
+- app/state.py: composed_audio_path/duration_s/request_id + 
+  clear_composed_audio(), now also called from clear_audio_mappings() and
+  invalidate_subtitle_audio().
+- app/ui.py (existing logic untouched except additive hooks): "Compose Audio"
+  button in the voice area; captured (duration, segments, mapping copy,
+  request_id, output) -> worker thread (no widget access) -> queue ->
+  root.after() with stale-id dropping; statuses Validating/Composing/Mixing/
+  complete; success stores composed path+duration+id, failure clears + dialog;
+  _update_compose_button_state (needs video + subtitles + FULL mapping, idle);
+  Generate All and Compose mutually exclude while either runs. Invalidation
+  hooks: batch completion (fresh WAVs), new video load, plus existing
+  SRT/edit/drag paths via state methods. Preview/batch flows byte-identical.
+- tests/test_ffmpeg_service.py (new, no GUI): 7 validation tests (empty
+  list/mapping, missing/empty WAV, 4 bad-timing cases, unknown duration,
+  missing mapping entry); 5 command tests (single, gaps, overlap-mix, trim,
+  unique outputs); AppState state+invalidation test; RealFFmpegComposeTest
+  (skipped unless ffmpeg exists) composing real sine WAVs and asserting
+  48k/stereo/s16 output with ~= video duration.
+- plan/plan12require.txt + plan12result.txt (this file): created.
+
+4. Files changed
+services/ffmpeg_service.py, app/state.py, app/ui.py,
+tests/test_ffmpeg_service.py, plan/plan12require.txt, plan/plan12result.txt.
+PLAN 10/11 synthesis, discovery, playback, timeline, editing, SRT: untouched.
+
+5. Important design decisions
+- Uniform filter graph for N=1 and N>1 (no special cases); amix normalize=0
+  preserves voice levels (documented clipping risk on overlaps).
+- apad before amix guarantees full-duration output even in edge cases; atrim
+  enforces exact video duration.
+- State writes happen only on the Tkinter main thread; worker returns data.
+- Wavs may extend past their subtitle end (no stretch); composition trims at
+  video duration; a subtitle starting at/after video end is a hard error.
+
+6. Tests actually executed
+- NONE. `python -m py_compile services/ffmpeg_service.py` / `app/ui.py` /
+  `app/state.py`: all blocked (spawn EFTYPE). Unit tests, `python main.py`,
+  real-FFmpeg composition: not attempted (same blocked path). All new tests
+  are written but UNRUN here (the real-FFmpeg test self-skips without ffmpeg).
+
+7. Tests that failed
+- None observed (nothing could run). Static grep audit confirmed one compose
+  chain, all invalidation hooks, and no leftover placeholders in the path.
+
+8. Environment limitations
+- All Python/shell execution returns `spawn EFTYPE` with no output. FFmpeg
+  presence on this machine is UNKNOWN (shutil.which unrunnable).
+
+9. Whether real FFmpeg composition was verified
+- NO. Not verified: output existence/size, duration match, gap silence,
+  overlap mixing, Preview/batch regression, GUI behavior. Manual procedure
+  for the user: load video+SRT -> Generate All Voices -> Compose Audio ->
+  check temp/composed/audio_*.wav duration ~= video duration and the
+  [AUDIO COMPOSE]/wav_match-style logs.

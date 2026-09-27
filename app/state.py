@@ -30,6 +30,11 @@ class AppState:
         self.audio_voice_name = None  # voice used for the stored WAVs
         self.audio_batch_id = None  # batch that produced the stored WAVs
 
+        # PLAN 12 composed timeline audio.
+        self.composed_audio_path = None  # composed timeline WAV path
+        self.composed_audio_duration_s = None  # composed duration in seconds
+        self.composed_audio_request_id = None  # request that produced it
+
     def clear_video_state(self):
         """Clear video-related state"""
         self.video_path = None
@@ -53,6 +58,7 @@ class AppState:
         self.subtitle_audio_errors = {}
         self.audio_voice_name = None
         self.audio_batch_id = None
+        self.clear_composed_audio()
 
     def invalidate_subtitle_audio(self, subtitle_index):
         """Drop the generated WAV mapping for one edited subtitle.
@@ -62,3 +68,10 @@ class AppState:
         """
         self.subtitle_audio_paths.pop(subtitle_index, None)
         self.subtitle_audio_errors.pop(subtitle_index, None)
+        self.clear_composed_audio()
+
+    def clear_composed_audio(self):
+        """Forget the composed timeline WAV (inputs changed or stale)."""
+        self.composed_audio_path = None
+        self.composed_audio_duration_s = None
+        self.composed_audio_request_id = None

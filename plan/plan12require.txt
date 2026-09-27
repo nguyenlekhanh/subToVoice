@@ -1,0 +1,54 @@
+PLAN 12 REQUIREMENTS
+
+Plan Number: 12
+Plan Name: FFmpeg Audio Composition
+
+Baseline: working PLAN 11 (batch WAVs in temp/voices/ + state mapping).
+Reuse PLAN 10/11 synthesis; do NOT rewrite them. PLAN 13/14/15 out of scope.
+
+Goal: ONE complete audio track from the generated subtitle WAVs, timed by
+each subtitle's start_ms/end_ms (voice at its start, silence elsewhere, no
+stretching of voice audio).
+
+1. Service (services/ffmpeg_service.py, GUI-independent, small functions):
+compose_subtitle_audio(...) receiving video duration, subtitle timing,
+audio mapping, output path; AppState data usable; no Tkinter dependency.
+2. Validation first: known video duration, subtitle list, mapping exists,
+every WAV exists/real file/nonzero/valid header, index match, valid
+start/end, timing within video duration, valid output path. Missing audio
+fails clearly, never silently skipped.
+3. Timeline: delay = start_ms per subtitle; silence where inactive; NEVER
+plain concatenation (0-2s A, 2-5s silence, 5-7s B pattern).
+4. Overlaps mixed (FFmpeg amix-style), never discarding a track.
+5. Output duration == video duration (silence-filled, trimmed, never
+extended/stretched).
+6. Predictable WAV: PCM 16-bit, 48 kHz, stereo; normalize inputs via filter
+if needed; never modify PLAN 11 source WAVs; always a new file.
+7. Output: temp/composed/ + unique name (audio_<request_id>.wav); no blind
+overwrites.
+8. GUI "Compose Audio" button: requires generated voices, background worker,
+responsive Tkinter, status, disabled-while-composing, success/failure report.
+Worker thread -> queue -> root.after() architecture.
+9. Honest status text (Validating/Composing/Mixing/complete); no fake progress.
+10. Minimal state: composed_audio_path (+duration); invalidated on SRT reload,
+timing/text edit, voice regeneration, mapping invalidation (reuse PLAN 11
+invalidation).
+11. Unique request ID per composition with [AUDIO COMPOSE] logs; stale results
+ignored, never overwriting current mapping.
+12. Existing FFmpeg discovery (shutil.which, no hardcoding); safe argv (no
+shell=True); captured returncode/stdout/stderr; useful stderr on failure.
+13. Robust filter design (normalize -> delay -> mix -> silence-fill -> trim ->
+PCM) working for 1/many/gap/overlap/Vietnamese/varied-duration/many inputs.
+14. No large FFmpeg construction in app/ui.py; UI calls service + displays.
+15. Tests (no GUI needed): empty list, missing mapping, missing WAV, invalid
+timing, single/multi/gap/overlap setups, trimming, unique output, AppState
+state+invalidation; real-FFmpeg tests only if FFmpeg exists. Never claim
+unrun passes.
+16. Logs: [AUDIO COMPOSE] request_id/subtitle_count/input/start_ms/end_ms/
+output/ffmpeg_returncode; no binary dumps.
+17. Logs: plan/plan12require.txt (this file), plan/plan12result.txt (honest:
+implementation, files, design, tests run/failed, limits, FFmpeg verified?).
+18. Preserve: video/SRT/playback/timeline/selection/editing/discovery/
+preview/batch/cancel/mapping/threading. No unrelated refactors.
+19. PLAN 12 ONLY: no MP4 muxing, save/load, cleanup, or later-plan features.
+STOP after PLAN 12.
