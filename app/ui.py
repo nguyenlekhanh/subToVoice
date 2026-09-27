@@ -41,6 +41,19 @@ class VideoVoiceEditorApp:
         # Subtitle timeline state
         self._subtitle_block_ids = {}  # subtitle index -> (rect_id, text_id)
         self._selected_subtitle_index = None
+        self._drag_subtitle_index = None
+        self._drag_start_x = None
+        self._drag_start_left_x = None
+        self._drag_duration = None
+        self._drag_subtitle = None
+        self._drag_moved = False
+
+        # Treeview in-place editing state
+        self._edit_entry = None
+        self._edit_var = None
+        self._edit_item = None
+        self._edit_col_name = None
+        self._edit_col_idx = None
         
         self._setup_window()
         self._create_ui()
@@ -239,8 +252,8 @@ class VideoVoiceEditorApp:
         self._timeline_marker_ids = []
         self._timeline_label_ids = []
 
-        # Bind events
-        self.timeline_canvas.bind("<ButtonPress-1>", self._on_timeline_click)
+        # Bind events. There is exactly one widget-level press handler.
+        self.timeline_canvas.bind("<ButtonPress-1>", self._on_timeline_mouse_press)
         self.timeline_canvas.bind("<Configure>", self._on_timeline_resize)
 
         # Draw initial empty timeline
@@ -386,17 +399,12 @@ class VideoVoiceEditorApp:
                 text=display_text,
                 fill="white",
                 font=("TkDefaultFont", 8),
-                anchor=tk.CENTER
+                anchor=tk.CENTER,
+                tags=("subtitle_block", f"subtitle_{sub.index}")
             )
             
             # Store block references
             self._subtitle_block_ids[sub.index] = (rect_id, text_id)
-            
-            # Bind click events to block
-            self.timeline_canvas.tag_bind(rect_id, "<Button-1>", 
-                                          lambda e, idx=sub.index: self._on_subtitle_block_click(e, idx))
-            self.timeline_canvas.tag_bind(text_id, "<Button-1>", 
-                                          lambda e, idx=sub.index: self._on_subtitle_block_click(e, idx))
 
     def _truncate_subtitle_text(self, text: str, max_width_px: int) -> str:
         """Truncate subtitle text to fit within block width"""
@@ -419,6 +427,21 @@ class VideoVoiceEditorApp:
         # Just select it
         return "break"  # Prevent event propagation to timeline click handler
 
+    def _get_subtitle_index_from_tags(self, tags):
+        """Return the numeric subtitle index encoded in Canvas tags, or None."""
+        if not tags:
+            return None
+        for tag in tags:
+            if tag == "subtitle_block":
+                continue
+            if tag.startswith("subtitle_"):
+                suffix = tag[len("subtitle_"):]
+                if suffix.isdigit():
+                    index = int(suffix)
+                    if index > 0:
+                        return index
+        return None
+
     def _select_subtitle_by_index(self, subtitle_index: int):
         """Select subtitle by index and update both Treeview and timeline"""
         self._selected_subtitle_index = subtitle_index
@@ -429,12 +452,14 @@ class VideoVoiceEditorApp:
                 self.state.selected_subtitle = sub
                 break
         
-        # Update Treeview selection
+        # Update Treeview selection only when it actually changes.
+        current_selection = self.subtitle_tree.selection()
         for item in self.subtitle_tree.get_children():
             item_index = int(self.subtitle_tree.item(item, "values")[0])
             if item_index == subtitle_index:
-                self.subtitle_tree.selection_set(item)
-                self.subtitle_tree.see(item)
+                if not current_selection or current_selection[0] != item:
+                    self.subtitle_tree.selection_set(item)
+                    self.subtitle_tree.see(item)
                 break
         
         # Update timeline block visual
@@ -588,11 +613,9 @@ class VideoVoiceEditorApp:
         # Check if click is on a subtitle block
         item = self.timeline_canvas.find_closest(event.x, event.y)
         if item:
-            tags = self.timeline_canvas.gettags(item[0])
-            for tag in tags:
-                if tag.startswith("subtitle_"):
-                    # Click was on a subtitle block, don't seek
-                    return
+            if self._get_subtitle_index_from_tags(self.timeline_canvas.gettags(item[0])) is not None:
+                # Click was on a subtitle block, don't seek
+                return
 
         # Convert click x to time
         clicked_time_ms = self._x_to_time(event.x)
@@ -606,47 +629,66 @@ class VideoVoiceEditorApp:
         self._seek_to_position(clicked_time_ms)
 
     def _on_timeline_mouse_press(self, event):
-        """Handle mouse press on timeline - start drag if on subtitle block"""
+        """Handle all Timeline mouse presses: subtitle selection/drag or empty-area seek."""
         if self.state.video_duration_ms <= 0:
             return
 
-        # Check if click is on a subtitle block
+        # Reset drag state for each new press.
+        self._drag_subtitle_index = None
+        self._drag_subtitle = None
+        self._drag_start_x = None
+        self._drag_start_left_x = None
+        self._drag_duration = None
+        self._drag_moved = False
+
+        # Check if press is on a subtitle block or its text.
         item = self.timeline_canvas.find_closest(event.x, event.y)
-        if not item:
+        subtitle_index = None
+        if item:
+            subtitle_index = self._get_subtitle_index_from_tags(
+                self.timeline_canvas.gettags(item[0])
+            )
+        
+        if subtitle_index is None:
+            # Empty Timeline press: use the existing seek behavior.
+            self._on_timeline_click(event)
             return
         
-        tags = self.timeline_canvas.gettags(item[0])
-        subtitle_tag = None
-        for tag in tags:
-            if tag.startswith("subtitle_"):
-                subtitle_tag = tag
-                break
-        
-        if not subtitle_tag:
-            # Click on empty timeline area - handled by existing click handler
+        # Subtitle press: select first, then arm a possible drag.
+        self._select_subtitle_by_index(subtitle_index)
+        block_ids = self._subtitle_block_ids.get(subtitle_index)
+        if block_ids is None:
+            return
+        block_coords = self.timeline_canvas.coords(block_ids[0])
+        if not block_coords or len(block_coords) < 4:
             return
         
-        # Start dragging subtitle block
-        sub_index = int(subtitle_tag.replace("subtitle_", ""))
-        self._drag_subtitle_index = sub_index
+        self._drag_subtitle_index = subtitle_index
         self._drag_start_x = event.x
-        self._drag_start_left_x = self.timeline_canvas.coords(self._subtitle_block_ids[sub_index][0])[0]
-        self._drag_duration = self._get_subtitle_duration(sub_index)
+        self._drag_start_left_x = block_coords[0]
+        self._drag_duration = self._get_subtitle_duration(subtitle_index)
         
         # Find subtitle in state
         self._drag_subtitle = None
         for sub in self.state.subtitles:
-            if sub.index == sub_index:
+            if sub.index == subtitle_index:
                 self._drag_subtitle = sub
                 break
 
     def _on_timeline_mouse_drag(self, event):
         """Handle mouse drag on timeline - move subtitle block"""
-        if not hasattr(self, '_drag_subtitle_index') or self._drag_subtitle_index is None:
+        if self._drag_subtitle_index is None:
             return
         
         if not self._drag_subtitle:
             return
+        
+        # A stationary press is a click, not a drag.
+        if self._drag_start_x is None:
+            return
+        if not self._drag_moved and abs(event.x - self._drag_start_x) < 4:
+            return
+        self._drag_moved = True
         
         # Calculate block width in pixels
         canvas_width = self.timeline_canvas.winfo_width()
@@ -673,7 +715,10 @@ class VideoVoiceEditorApp:
         new_right_x = new_left_x + block_width
         
         # Update block position visually
-        rect_id, text_id = self._subtitle_block_ids[self._drag_subtitle_index]
+        block_ids = self._subtitle_block_ids.get(self._drag_subtitle_index)
+        if block_ids is None:
+            return
+        rect_id, text_id = block_ids
         block_height = 28
         top_margin = self._timeline_margin_top
         bottom_margin = self._timeline_margin_bottom
@@ -694,11 +739,27 @@ class VideoVoiceEditorApp:
 
     def _on_timeline_mouse_release(self, event):
         """Handle mouse release on timeline - finalize drag"""
-        if not hasattr(self, '_drag_subtitle_index') or self._drag_subtitle_index is None:
+        if self._drag_subtitle_index is None:
+            self._drag_moved = False
             return
         
-        if not hasattr(self, '_drag_subtitle') or not self._drag_subtitle:
+        if not self._drag_subtitle:
             self._drag_subtitle_index = None
+            self._drag_subtitle = None
+            self._drag_start_x = None
+            self._drag_start_left_x = None
+            self._drag_duration = None
+            self._drag_moved = False
+            return
+        
+        if not self._drag_moved:
+            # A stationary press was only a selection click.
+            self._drag_subtitle_index = None
+            self._drag_subtitle = None
+            self._drag_start_x = None
+            self._drag_start_left_x = None
+            self._drag_duration = None
+            self._drag_moved = False
             return
         
         # Calculate new position in milliseconds
@@ -706,10 +767,24 @@ class VideoVoiceEditorApp:
         if canvas_width <= 1:
             canvas_width = 1000
         
-        rect_id, text_id = self._subtitle_block_ids[self._drag_subtitle_index]
+        block_ids = self._subtitle_block_ids.get(self._drag_subtitle_index)
+        if block_ids is None:
+            self._drag_subtitle_index = None
+            self._drag_subtitle = None
+            self._drag_start_x = None
+            self._drag_start_left_x = None
+            self._drag_duration = None
+            self._drag_moved = False
+            return
+        rect_id, text_id = block_ids
         coords = self.timeline_canvas.coords(rect_id)
         if not coords or len(coords) < 4:
             self._drag_subtitle_index = None
+            self._drag_subtitle = None
+            self._drag_start_x = None
+            self._drag_start_left_x = None
+            self._drag_duration = None
+            self._drag_moved = False
             return
         
         new_left_x = coords[0]
@@ -757,9 +832,10 @@ class VideoVoiceEditorApp:
         # Clean up drag state
         self._drag_subtitle_index = None
         self._drag_subtitle = None
-        self._drag_start_x = 0
-        self._drag_start_left_x = 0
-        self._drag_duration = 0
+        self._drag_start_x = None
+        self._drag_start_left_x = None
+        self._drag_duration = None
+        self._drag_moved = False
 
     def _on_timeline_resize(self, event):
         """Handle timeline canvas resize"""
@@ -827,8 +903,8 @@ class VideoVoiceEditorApp:
         self.subtitle_tree.bind("<Escape>", self._on_treeview_escape)
         self.subtitle_tree.bind("<FocusOut>", self._on_treeview_focus_out)
 
-        # Bind keyboard shortcuts for timeline drag
-        self.timeline_canvas.bind("<ButtonPress-1>", self._on_timeline_mouse_press)
+        # Bind timeline motion and release handlers. Press handling is already
+        # bound once in _create_timeline.
         self.timeline_canvas.bind("<B1-Motion>", self._on_timeline_mouse_drag)
         self.timeline_canvas.bind("<ButtonRelease-1>", self._on_timeline_mouse_release)
 
@@ -1565,7 +1641,10 @@ class VideoVoiceEditorApp:
             self._cancel_treeview_edit()
         
         # Get cell bounding box
-        x, y, width, height = self.subtitle_tree.bbox(item, f"#{col_idx+1}")
+        cell_bbox = self.subtitle_tree.bbox(item, f"#{col_idx+1}")
+        if not cell_bbox or len(cell_bbox) < 4:
+            return
+        x, y, width, height = cell_bbox
         if width <= 0 or height <= 0:
             return
         

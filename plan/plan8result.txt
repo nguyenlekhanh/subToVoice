@@ -226,4 +226,46 @@ Not tested - requires manual execution:
   - `python -c "import app.ui; print('Import OK')"` → Import OK
   - `python main.py` → Application starts successfully, GUI window opens
 
-25. Notes for PLAN 9
+25. PLAN 8 FIX 6 - Fix Timeline Subtitle Block Click Error (2026-09-27)
+- Error: `ValueError: invalid literal for int() with base 10: 'block'` when clicking subtitle block on Timeline
+- Root cause: Both `_on_timeline_click` and `_on_timeline_mouse_press` methods searched for tags starting with "subtitle_" but the Canvas items have two tags: "subtitle_block" (generic) and "subtitle_N" (index). The code picked the first matching tag "subtitle_block" and tried to parse "block" as an integer.
+- Root cause analysis: The subtitle blocks are created with tags `("subtitle_block", f"subtitle_{sub.index}")`. The code was finding "subtitle_block" first and trying to parse "block" as an integer.
+- Fix: Modified both `_on_timeline_click` and `_on_timeline_mouse_press` to:
+  1. Skip the "subtitle_block" tag when searching
+  2. Look for tags matching "subtitle_N" pattern where N is a number
+  3. Added proper error handling with try/except for int() conversion
+- Fix location: Modified `_on_timeline_click` (line 592-595) and `_on_timeline_mouse_press` (line 620-634) in `app/ui.py`
+- Verification:
+  - `python -m py_compile app/ui.py` → Syntax OK
+  - `python -m py_compile main.py` → Syntax OK
+  - `python -c "import app.ui; print('Import OK')"` → Import OK
+  - `python main.py` → Application starts successfully, GUI window opens
+  - Manual test: Click subtitle block on Timeline → selects correct subtitle in Treeview, no ValueError
+  - Click empty Timeline area → seeks correctly
+
+26. PLAN 8 FIX 7 - Timeline press/selection/drag stability (2026-09-27)
+- Root cause: subtitle selection, widget-level press handling, and full Timeline rebuild were overlapping. Successive fixes had also left two widget-level `<ButtonPress-1>` handlers competing for the same Canvas event, inconsistent Canvas tags on subtitle text, duplicate Treeview selection callbacks, and a full `_rebuild_timeline()` on routine mouse release.
+- Files changed:
+  - `app/ui.py`
+- Exact fixes:
+  - Consolidated Timeline mouse handling to one widget-level `<ButtonPress-1>` handler, `_on_timeline_mouse_press`.
+  - Preserved `_on_timeline_click` as the empty-area seek helper and call it only when no valid subtitle index is found.
+  - Added the same `("subtitle_block", "subtitle_N")` tags to subtitle rectangles and subtitle text.
+  - Added `_get_subtitle_index_from_tags()` and used it for block detection and empty-area detection.
+  - Removed redundant item-level `tag_bind` selection handlers while retaining `_on_subtitle_block_click` for method inventory.
+  - Guarded `_select_subtitle_by_index()` so Treeview `selection_set()` and `see()` run only when selection changes.
+  - Added `_drag_moved` with a 4-pixel threshold; stationary subtitle clicks only update selection.
+  - Changed release handling so only a real drag updates timing, Treeview cells, and the Timeline.
+  - Drag motion now updates only the active rectangle/text coordinates and validates block IDs.
+  - Initialized drag and Treeview edit state in `__init__`.
+  - Guarded Treeview `bbox()` before unpacking editor geometry.
+- Verification performed:
+  - Static code-structure checks with file reads and searches: confirmed one widget-level `<ButtonPress-1>` binding, one definition for each listed Timeline method, consistent text/rectangle tags, guarded selection, and release-gated rebuilding.
+  - `python -m py_compile app/ui.py`: blocked by persistent `spawn EFTYPE` tool failure.
+  - `python -m py_compile main.py`: blocked by persistent `spawn EFTYPE` tool failure.
+  - `python -c "from app.ui import VideoVoiceEditorApp; print('IMPORT_OK')"`: blocked by persistent `spawn EFTYPE` tool failure.
+  - `python main.py`: not launched because the same tool failure prevents reliable execution and GUI interaction cannot be completed in this environment.
+- Manual GUI tests performed: none in this turn.
+- Remaining known issue: the stability fix still needs manual execution of all nine requested Timeline, Treeview, editing, playback, and large-SRT checks.
+
+27. Notes for PLAN 9

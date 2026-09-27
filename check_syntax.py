@@ -1,7 +1,7 @@
-import py_compile
 import sys
-
+sys.path.insert(0, r'C:\khanh\python\30_2 subTheoVoice1')
 try:
+    import py_compile
     py_compile.compile(r'C:\khanh\python\30_2 subTheoVoice1\app\ui.py', doraise=True)
     print("app/ui.py Syntax OK")
 except py_compile.PyCompileError as e:
