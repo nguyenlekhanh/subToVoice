@@ -1,0 +1,88 @@
+PLAN 15 REQUIREMENTS (FINAL PLAN: cleanup + error handling)
+
+Baseline: working PLAN 14. PLAN 10-14 are feature-complete; do NOT rewrite,
+redesign, re-framework, or add dependencies. Small targeted changes only.
+
+Goal: (1) safe temp cleanup, (2) safer project replacement/close, (3)
+consistent errors, (4) no stale worker writes, (5) no missing-file/runtime
+crashes, (6) safe shutdown, (7) better status/error messages, (8) final
+regression tests.
+
+1. Temp dirs (temp/, temp/preview/, temp/voices/, output/): never blindly
+delete; distinguish temporary vs project-referenced files. Temporary: old
+preview WAVs, abandoned batch/composed WAVs, interrupted files, atomic-save
+leftovers. Never delete still-referenced files, source video/SRT, .vveproj,
+referenced Final MP4s, or user files outside temp/output.
+2. GUI-independent services/cleanup_service.py (adjustable API:
+cleanup_preview_files/orphaned_voice/composed/stale-temp): existence-checked,
+missing-tolerant, no unsafe paths, no shell deletes, stdlib only.
+3. Preview WAVs: no unlimited accumulation; keep playing + newest; never
+delete a winsound-in-use file (defer if unsafe); clean before new preview /
+after playback / on close / on project replace. Never break Preview Voice.
+4. Batch WAVs (temp/voices/, batch IDs): never delete old batch before the new
+one succeeds; afterward remove orphans only if unreferenced by the current
+project; never delete files merely because a newer batch exists if a saved
+project references them.
+5. Composed audio: never delete previous before the new one succeeds; clean
+old unreferenced files only after success; on failure keep the old valid
+file; never point state at a deleted file.
+6. Final MP4 (output/final_<id>.mp4): user outputs, never auto-deleted; only
+incomplete temp export files if any exist; never delete existing MP4s,
+projects, or source video.
+7. Atomic-save leftovers (*.vveproj.tmp): clean only inside the project dir,
+matching pattern, never the real file, never arbitrary .tmp files.
+8. Close path: block new work, stop playback, cancel voice/composition/export
+workers where possible, no destroyed-widget updates, clean safe temps,
+destroy root. No taskkill, no killing unrelated processes; late workers must
+finish without touching dead UI.
+9. Every worker result checked before UI/state writes; guards for closing,
+stale request/batch IDs, destroyed widgets, replaced project/video/subtitles
+(especially Preview, Batch, Compose, Export).
+10. Request/batch IDs on async ops; stale results ignored safely; no false
+"completed", no state writes from stale work. No duplicated mechanisms.
+11-12. Clear/short/actionable user errors (concise, not raw tracebacks;
+technical detail to logs, never hidden). Categories: video/FFmpeg/FFprobe,
+SRT, Piper (runtime/model/config/synthesis/WAV), FFmpeg (missing/inputs/
+outputs/compose/export), project (missing/malformed/version/files/state),
+filesystem (permissions/dirs/disk). Unexpected exceptions logged, never
+silently swallowed.
+13. Small _show_error/_show_warning helpers (messagebox-based, concise +
+status + optional log); no big framework; no duplicate dialogs per error.
+14. Consistent statuses (Ready/Loading.../Generating x/y/complete/Composing/
+Exporting/created/saved/loaded/Warning/Error); never stuck on "Processing..."
+after failure.
+15. No false success: outputs verified (exists/nonzero/header/duration/
+streams where supported); stale-ignored results never report success.
+16. Partial batch failure preserved (X succeeded, Y failed; inspectable; no
+false full-success claims).
+17. Cancel safety: idempotent requests, no corruption/false success/stale
+overwrite/crash on double-click or post-completion click; partial WAVs may
+remain for later cleanup; no forced Piper kills beyond existing architecture.
+18. Playback shutdown: threads exit, no endless callbacks, no post-shutdown
+image/canvas updates, no accidental thread creation; no architecture rewrite.
+19. Project replacement: late Project-A workers ignored in Project B (video
+included); use request/project IDs; no project manager.
+20. Missing files (video/WAV/composed/MP4): warn, stay editable, no auto-
+regeneration (PLAN 14 behavior preserved).
+21. Cleanup safety critical: never extension-only deletes; restrict to known
+dirs + patterns; protect active/referenced/project files; when uncertain, DO
+NOT DELETE. Tolerate Windows locks (PermissionError/OSError logged, no crash,
+no endless retry).
+22. Above.
+23. Prefixes [CLEANUP]/[ERROR]/[SHUTDOWN]/[WORKER]/[PROJECT]/[VOICE PREVIEW]/
+[VOICE BATCH]/[FFMPEG]; no huge dumps.
+24. Tests: tests/test_cleanup_service.py + tests/test_error_handling.py (+
+updates): 10 cleanup-safety + 15 error-handling cases listed in the plan;
+no real Piper/FFmpeg required (mocks/fakes).
+25. Run existing suite (all regression areas listed); no removals, no weakened
+assertions.
+26. Manual 20-step regression if runnable; never claim unperformed passes.
+27. Cleanup scans only temp/*/output, only when needed; never every UI event,
+during playback, or slowing editing.
+28. No new third-party dependencies.
+29. Logs plan/plan15require.txt (this file) + plan/plan15result.txt (honest;
+spawn EFTYPE recorded exactly; no unrun passes claimed).
+30. PLAN 15 ONLY (no new features/effects/cloud/backup/autosave/undo/codecs/
+frameworks/rewrites). 31. Quality checklist incl. duplicates/indentation/
+imports/startup/cleanup/shutdown/staleness/false-success/missing-files/
+Save-Load+Preview+Batch+Compose+Export verification.

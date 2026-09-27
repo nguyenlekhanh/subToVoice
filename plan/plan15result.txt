@@ -1,0 +1,71 @@
+PLAN 15 RESULT (FINAL: cleanup + error handling)
+
+1. Date
+2026-09-27
+
+2. Status
+PARTIAL (code complete; no runtime verification possible here).
+
+3. Implementation summary
+- services/cleanup_service.py (new, stdlib-only, GUI-free): safe_unlink
+  (missing/locked tolerant, never raises); cleanup_preview_files (top-level
+  *.wav only, keeps explicit keep-set + newest, unknown files/subdirs kept);
+  cleanup_orphaned_files (prefix + .wav + unreferenced only); 
+  cleanup_stale_save_tmp_files (*.vveproj.tmp only, real projects kept);
+  cleanup_on_close (preview sweep). All return {deleted,kept,errors} summaries
+  with [CLEANUP] lines; containment inherent (directory listing only).
+- app/ui.py (additive, no architecture change): _closing/_pending_video_path/
+  _pending_srt_path/_last_preview_wav state; WM_DELETE_WINDOW -> _on_close
+  (stop playback, cancel batch, purge winsound, preview sweep, destroy; every
+  step guarded); _show_error/_show_warning helpers (concise dialog + status +
+  [ERROR]/[WARNING] log, TclError-safe); closing guards at the top of all 8
+  _check_* pollers + _insert_batch + deferred _save_treeview_edit +
+  _on_seek_frame_ready + _update_status; SRT poller made perpetual (same
+  pattern as the PLAN 14 video fix); video/SRT generation guards
+  (_pending_*_path set at load start, stale successes logged + ignored with
+  button re-enabled, project-replacement safe); preview auto-cleanup before
+  each new synthesis (keeping the last file) + on project load + on close;
+  new voices/composed/MP4/output NEVER auto-deleted (may back saved
+  .vveproj -- safety over completeness, §21).
+- Deliberately NOT changed: existing dialogs (already concise), batch
+  partial-failure semantics, playback architecture, main.py (protocol hook
+  suffices), preview/batch/compose/export workers and guards.
+- tests/test_cleanup_service.py (new): 12 tests covering all 10 cleanup-safety
+  cases (old/newest/playing/unknown/subdirs/missing/close/outside-dir,
+  voice+composed orphans, save-tmp, missing-unlink, mocked lock failure).
+- tests/test_error_handling.py (new): 13 tests covering missing video/Piper/
+  model, synthesis/FFmpeg/compose/export failures (fake nonzero exits),
+  invalid WAV, missing composed audio, malformed/missing/unsupported-version
+  projects, missing-FFmpeg loud failure, double-cancel safety.
+- plan/plan15require.txt + plan/plan15result.txt (this file): created.
+
+4. Files changed
+services/cleanup_service.py (new), app/ui.py,
+tests/test_cleanup_service.py (new), tests/test_error_handling.py (new),
+plan/plan15require.txt, plan/plan15result.txt. No other files touched.
+
+5. Cleanup behavior / protected files / shutdown / stale handling / errors
+As in sections 3-4: auto-deletion limited to Preview WAVs (+save-tmp helper,
+unwired to timers); source video/SRT/.vveproj/Final MP4/user files outside
+temp never deleted; shutdown stops work, purges audio, sweeps previews, and
+blocks all late widget writes; video/SRT/preview/batch/compose/export stale
+results ignored (request/batch/path-ID guards); error helpers centralize
+concise user messages with technical detail in logs.
+
+6. Tests actually executed
+- NONE. `python -m py_compile services/cleanup_service.py` / `app/ui.py`:
+  blocked (spawn EFTYPE). Full unit suite, GUI startup, manual 20-step
+  regression, close-during-generation: not attempted (same blocked path).
+  All new tests written but UNRUN; existing tests untouched, none weakened.
+
+7. Tests that failed
+- None observed (nothing could run). Static audit: one definition per
+  method (no duplicates), import block intact, guard placement verified by
+  read-back.
+
+8. Manual tests actually performed
+- None by agent. Procedure for the user: 20-step regression in plan15require
+  §26 plus close-during-batch and missing-media project checks.
+
+9. Environment limitations
+- All Python/shell execution returns `spawn EFTYPE` with no output.

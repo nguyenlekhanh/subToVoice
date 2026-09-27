@@ -21,6 +21,10 @@ from services.piper_service import (
     wav_info,
 )
 from services.ffmpeg_service import FFmpegService, probe_mp4
+from services.cleanup_service import (
+    cleanup_on_close,
+    cleanup_preview_files,
+)
 from services.project_service import (
     FORMAT_ID,
     SUPPORTED_VERSION,
@@ -73,6 +77,11 @@ class VideoVoiceEditorApp:
         self._export_result_queue = queue.Queue()
         self._export_generating = False
         self._export_request_id = None
+        # PLAN 15 shutdown / staleness guards
+        self._closing = False
+        self._pending_video_path = None
+        self._pending_srt_path = None
+        self._last_preview_wav = None
         self._srt_load_thread = None
         self._srt_result_queue = queue.Queue()
         self._batch_insert_index = 0
@@ -118,6 +127,7 @@ class VideoVoiceEditorApp:
         self.root.title("Video Voice Editor")
         self.root.geometry("1200x800")
         self.root.minsize(800, 600)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _create_ui(self):
         """Create the main UI layout"""
@@ -1046,6 +1056,8 @@ class VideoVoiceEditorApp:
 
     def _check_piper_result(self):
         """Consume one Piper discovery result on the Tkinter main thread."""
+        if self._closing:
+            return
         try:
             status, payload = self._piper_result_queue.get_nowait()
         except queue.Empty:
@@ -1204,6 +1216,8 @@ class VideoVoiceEditorApp:
         project_root = Path(__file__).resolve().parent.parent
         preview_dir = project_root / "temp" / "preview"
         preview_dir.mkdir(parents=True, exist_ok=True)
+        cleanup_preview_files(preview_dir, keep_paths=[self._last_preview_wav]
+                              if self._last_preview_wav else [])
         output_path = preview_dir / f"{request_id}.wav"
         while output_path.exists():
             output_path = preview_dir / f"{uuid.uuid4().hex[:8]}.wav"
@@ -1245,6 +1259,8 @@ class VideoVoiceEditorApp:
 
     def _check_preview_result(self, request_id=None):
         """Consume one preview result on the Tkinter main thread."""
+        if self._closing:
+            return
         try:
             result = self._preview_result_queue.get_nowait()
         except queue.Empty:
@@ -1288,6 +1304,7 @@ class VideoVoiceEditorApp:
                 "Preview Voice",
                 "The preview WAV changed between synthesis and playback.",
             )
+        self._last_preview_wav = result.output_wav
         self._update_status("Playing voice preview.")
         self._play_preview_wav(result.output_wav)
         self._update_preview_button_state()
@@ -1414,6 +1431,8 @@ class VideoVoiceEditorApp:
 
     def _check_batch_result(self, batch_id=None):
         """Consume batch progress/results on the Tkinter main thread."""
+        if self._closing:
+            return
         try:
             while True:
                 item = self._batch_result_queue.get_nowait()
@@ -1559,6 +1578,8 @@ class VideoVoiceEditorApp:
 
     def _check_compose_result(self, request_id=None):
         """Consume composition results on the Tkinter main thread."""
+        if self._closing:
+            return
         try:
             while True:
                 item = self._compose_result_queue.get_nowait()
@@ -1611,8 +1632,63 @@ class VideoVoiceEditorApp:
 
     def _update_status(self, message: str):
         """Update status bar message"""
+        if self._closing:
+            return
         self.status_bar.config(text=message)
         self.root.update_idletasks()
+
+    def _show_error(self, title: str, user_message: str, technical=None):
+        """One concise dialog + status + log line for failures."""
+        print(f"[ERROR] {title}: {technical if technical is not None else user_message}")
+        self._update_status(f"Error: {user_message}")
+        if self._closing:
+            return
+        try:
+            messagebox.showerror(title, user_message)
+        except tk.TclError:
+            pass
+
+    def _show_warning(self, title: str, user_message: str, technical=None):
+        """One concise dialog + status + log line for warnings."""
+        print(f"[WARNING] {title}: {technical if technical is not None else user_message}")
+        self._update_status(f"Warning: {user_message}")
+        if self._closing:
+            return
+        try:
+            messagebox.showwarning(title, user_message)
+        except tk.TclError:
+            pass
+
+    def _on_close(self):
+        """Safe shutdown: stop work, purge audio, sweep previews, destroy."""
+        if self._closing:
+            return
+        self._closing = True
+        print("[SHUTDOWN] closing application")
+        try:
+            self._stop_playback()
+        except Exception as exc:
+            print(f"[SHUTDOWN] playback stop failed: {exc}")
+        try:
+            if self._batch_cancel_event is not None:
+                self._batch_cancel_event.set()
+        except Exception as exc:
+            print(f"[SHUTDOWN] batch cancel failed: {exc}")
+        try:
+            import winsound
+            winsound.PlaySound(None, winsound.SND_PURGE)
+        except Exception:
+            pass
+        try:
+            project_root = Path(__file__).resolve().parent.parent
+            summary = cleanup_on_close(project_root / "temp" / "preview")
+            print(f"[SHUTDOWN] preview cleanup: {summary}")
+        except Exception as exc:
+            print(f"[SHUTDOWN] cleanup failed: {exc}")
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     @staticmethod
     def _format_timestamp_display(ms: int) -> str:
@@ -1671,6 +1747,7 @@ class VideoVoiceEditorApp:
         # Disable Load Video button during loading
         self.btn_load_video.config(state=tk.DISABLED)
         self._update_status("Loading video...")
+        self._pending_video_path = file_path
 
         # Start background worker
         self._video_load_thread = threading.Thread(
@@ -1697,6 +1774,8 @@ class VideoVoiceEditorApp:
 
     def _check_video_result(self):
         """Check for video loading result from background thread"""
+        if self._closing:
+            return
         try:
             result = self._video_result_queue.get_nowait()
         except queue.Empty:
@@ -1708,23 +1787,29 @@ class VideoVoiceEditorApp:
 
         if result[0] == "success":
             _, metadata = result
-            self._update_video_state(metadata)
-            self._display_video_metadata(metadata)
-            self._display_first_frame(metadata.first_frame_path)
-            self._update_playback_controls_state()
-            self._update_position_display()
-            self._rebuild_timeline()
-            self._update_status("Video loaded")
-            self._update_compose_button_state()
-            self._update_export_button_state()
-            self._mark_project_dirty()
+            if (self._pending_video_path is not None
+                    and metadata.path != self._pending_video_path):
+                print(f"[WORKER] ignoring stale video result for {metadata.path}")
+            else:
+                self._pending_video_path = None
+                self._update_video_state(metadata)
+                self._display_video_metadata(metadata)
+                self._display_first_frame(metadata.first_frame_path)
+                self._update_playback_controls_state()
+                self._update_position_display()
+                self._rebuild_timeline()
+                self._update_status("Video loaded")
+                self._update_compose_button_state()
+                self._update_export_button_state()
+                self._mark_project_dirty()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load video")
             messagebox.showerror("Load Video Failed", f"Failed to load video:\n{error_msg}")
         # Perpetual poller (started once in __init__): keep consuming results
         # so later loads (manual or project restore) are never missed.
-        self.root.after(50, self._check_video_result)
+        if not self._closing:
+            self.root.after(50, self._check_video_result)
 
     def _update_video_state(self, metadata):
         """Update application state with video metadata"""
@@ -2031,6 +2116,8 @@ class VideoVoiceEditorApp:
 
     def _check_playback_result(self):
         """Check for playback results from background thread"""
+        if self._closing:
+            return
         try:
             while True:
                 result = self._playback_result_queue.get_nowait()
@@ -2178,6 +2265,8 @@ class VideoVoiceEditorApp:
 
     def _on_seek_frame_ready(self, frame_path: str, was_playing: bool):
         """Handle frame ready after seek"""
+        if self._closing:
+            return
         self._display_frame_in_preview(frame_path)
         self._update_playhead_position()
         try:
@@ -2214,6 +2303,7 @@ class VideoVoiceEditorApp:
         # Disable Load SRT button during loading
         self.btn_load_srt.config(state=tk.DISABLED)
         self._update_status("Loading SRT...")
+        self._pending_srt_path = file_path
 
         # Start background worker
         self._srt_load_thread = threading.Thread(
@@ -2235,6 +2325,8 @@ class VideoVoiceEditorApp:
 
     def _check_srt_result(self):
         """Check for SRT loading result from background thread"""
+        if self._closing:
+            return
         try:
             result = self._srt_result_queue.get_nowait()
         except queue.Empty:
@@ -2246,25 +2338,35 @@ class VideoVoiceEditorApp:
 
         if result[0] == "success":
             _, file_path, subtitles = result
-            self.state.srt_path = file_path
-            self.state.subtitles = subtitles
-            self.state.clear_audio_mappings()
-            self._batch_insert_subtitles = subtitles
-            self._batch_insert_index = 0
-            self._insert_batch()
-            # Rebuild timeline to show subtitle blocks
-            self._rebuild_timeline()
-            self._update_batch_button_state()
-            self._update_compose_button_state()
-            self._update_export_button_state()
-            self._mark_project_dirty()
+            if self._pending_srt_path is not None and file_path != self._pending_srt_path:
+                print(f"[WORKER] ignoring stale SRT result for {file_path}")
+                self.btn_load_srt.config(state=tk.NORMAL)
+            else:
+                self._pending_srt_path = None
+                self.state.srt_path = file_path
+                self.state.subtitles = subtitles
+                self.state.clear_audio_mappings()
+                self._batch_insert_subtitles = subtitles
+                self._batch_insert_index = 0
+                self._insert_batch()
+                # Rebuild timeline to show subtitle blocks
+                self._rebuild_timeline()
+                self._update_batch_button_state()
+                self._update_compose_button_state()
+                self._update_export_button_state()
+                self._mark_project_dirty()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load SRT: {error_msg}")
             messagebox.showerror("Load SRT Failed", f"Failed to load SRT file:\n{error_msg}")
+        # Perpetual poller (started once in __init__): later loads are covered.
+        if not self._closing:
+            self.root.after(50, self._check_srt_result)
 
     def _insert_batch(self):
         """Insert a batch of subtitles into Treeview"""
+        if self._closing:
+            return
         batch_size = 100
         subtitles = self._batch_insert_subtitles
         total = len(subtitles)
@@ -2404,6 +2506,8 @@ class VideoVoiceEditorApp:
 
     def _save_treeview_edit(self):
         """Save Treeview cell edit"""
+        if self._closing:
+            return
         if not hasattr(self, '_edit_entry') or not self._edit_entry:
             return
         
@@ -2831,6 +2935,7 @@ class VideoVoiceEditorApp:
                 self.state.video_fps = video_info.get("fps", 0.0) or 0.0
                 self.btn_load_video.config(state=tk.DISABLED)
                 self._update_status("Loading video...")
+                self._pending_video_path = saved_video
                 threading.Thread(
                     target=self._video_load_worker, args=(saved_video,), daemon=True
                 ).start()
@@ -2848,6 +2953,14 @@ class VideoVoiceEditorApp:
 
         self.state.project_path = str(Path(project_file))
         self.state.project_dirty = False
+        try:
+            project_root = Path(__file__).resolve().parent.parent
+            cleanup_preview_files(
+                project_root / "temp" / "preview",
+                keep_paths=[self._last_preview_wav] if self._last_preview_wav else [],
+            )
+        except Exception as exc:
+            print(f"[CLEANUP] project-load sweep failed: {exc}")
         self._update_preview_button_state()
         self._update_batch_button_state()
         self._update_compose_button_state()
@@ -2924,6 +3037,8 @@ class VideoVoiceEditorApp:
 
     def _check_export_result(self, request_id=None):
         """Consume export results on the Tkinter main thread."""
+        if self._closing:
+            return
         try:
             while True:
                 item = self._export_result_queue.get_nowait()
