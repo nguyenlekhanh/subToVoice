@@ -1,0 +1,75 @@
+PLAN 14 REQUIREMENTS
+
+Plan Number: 14
+Plan Name: Project Save and Load
+
+Baseline: working PLAN 13. Reuse PLAN 10-13 code; do NOT rewrite it. No
+PLAN 15.
+
+Goal: save the editing session to a versioned JSON project file (.vveproj)
+and reopen it later, preserving editing state without copying large media.
+
+1. Format: versioned JSON {format: video_voice_editor_project, version: 1,
+video{path,duration}, subtitles[{index,start_ms,end_ms,text,voice}], audio
+{voice_name, subtitle_audio_paths}, composed_audio{path,duration}, final_mp4
+{path,duration}} (adjustable to state architecture). No GUI state, widgets,
+or binary media in JSON.
+2. Service services/project_service.py, Tkinter-free: save/load, format +
+version validation, Unicode/multiline/index/timing/voice/mapping/composed/
+final preservation. ProjectLoadError/ProjectValidationError style errors.
+3. Paths: relative to the .vveproj directory when inside it, absolute
+otherwise; metadata only (no auto-copy of video/WAV/MP4); on load resolve
+relative against the project dir, keep absolute, normalize safely, never
+silently change missing paths.
+4. Save Project (Save As dialog when new) + 5. Save Project As (always
+dialog, normal overwrite confirm, store path, "Project saved: <path>").
+Save from live model/state, never stale display values.
+6. Load Project (*.vveproj dialog): validate -> subtitles -> video ->
+voice -> mappings -> composed -> final -> GUI refresh + timeline rebuild +
+selection. Model first, UI from state.
+7. Missing files: load metadata anyway, keep references, clear missing-file
+status (video/WAV/composed/final); no auto-recovery/relocation yet.
+8. Audio mapping keyed by subtitle index; JSON string keys convert back to
+ints; never leak string indexes into the app.
+9. No auto-regeneration on load (no Piper/FFmpeg); missing outputs marked
+unavailable, never pretended to exist.
+10. Minimal project_path (+project_dirty if cheap); dirty on text/timing
+edit, drag, SRT/video load, batch/compose/export completion; no undo/history
+redesign.
+11. Unsaved-changes protection for Load Project (Save/Don't Save/Cancel);
+no silent loss; no invented New Project action required.
+12. Refresh on load: preview, Video Info, Treeview, voice, timeline,
+playhead, seek, composed/final state, status. Video reload acceptable if
+simplest; nothing auto-generated.
+13. Voice compatibility: select saved voice if discovered; else preserve
+honestly + warn, never silently substitute/download, discovery untouched.
+14. Validation rejects: non-object root, wrong format, unsupported version,
+non-list subtitles, missing/invalid fields, bad timing (end>start), non-string
+text, bad indexes, malformed audio mapping. Clear errors, no over-engineering.
+15. Atomic save: temp write + flush + replace; UTF-8, indent=2, ensure_ascii
+False (Vietnamese preserved).
+16. Save/Load is fast file I/O: no worker threads needed; never auto-run
+Piper/FFmpeg/video encoding on load.
+17. User-chosen .vveproj location (not forced into temp/output); media stays
+put; project references only.
+18. Order: validate fully -> clear runtime safely -> restore video/subtitles/
+voice/mappings/composed/final -> refresh GUI -> timeline -> selection ->
+status; failed validation leaves current project untouched.
+19. Never serialize widgets/images/IDs/threads/queues/workers/playback/editors.
+20. Tests in tests/test_project_service.py: round-trips (basic, Unicode,
+multiline, timing, indexes, voices, selected voice, audio/composed/final),
+relative/absolute store+resolve, missing references, all rejections, atomic
+save, failed-load state safety; GUI save/load/dirty tests only if practical
+without real Piper/FFmpeg. Never claim unrun passes.
+21. Logs [PROJECT] saving/loading/subtitle_count/video_path/
+audio_mapping_count/composed_audio/final_mp4 + missing-file lines; no JSON
+dumps.
+22. Logs plan/plan14require.txt (this file), plan/plan14result.txt (honest).
+23. Preserve everything (video/SRT/playback/timeline/selection/editing/
+discovery/preview/batch/cancel/compose/export/threading). No refactors.
+24. PLAN 14 ONLY (no cleanup/relocation/backups/cloud/undo/autosave/
+migration/visualization/burn-in/effects). Safety: failed parse keeps current
+state; missing media loads with warnings.
+Verification steps 1-20 incl. GUI save/restart/load, missing-media,
+malformed, failed-load safety, PLAN 10-12 regression; spawn EFTYPE recorded
+exactly when blocking. STOP after PLAN 14.

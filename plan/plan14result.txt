@@ -1,0 +1,76 @@
+PLAN 14 RESULT (Project Save and Load)
+
+1. Date
+2026-09-27
+
+2. Status
+PARTIAL (code complete; no runtime verification possible here).
+
+3. What was implemented
+- services/project_service.py (new, Tkinter-free): versioned JSON format
+  (format=video_voice_editor_project, version=1, .vveproj); store_path
+  (relative inside project dir, absolute outside; metadata only, no copies);
+  resolve_path (relative anchored at .vveproj dir, absolute passthrough,
+  safe normalization); validate_project_data (root/format/version, subtitle
+  list with index>0/start>=0/end>start/text str/voice str, int-keyed audio
+  mapping); save_project (envelope check, auto .vveproj suffix, mkdir,
+  tmp-write + flush + fsync + os.replace atomicity, UTF-8 indent=2
+  ensure_ascii=False); load_project (utf-8-sig read, JSON parse, validation;
+  never touches app state).
+- app/state.py: project_path + project_dirty fields (additive only).
+- app/ui.py (existing logic untouched except additive hooks): toolbar Save
+  Project / Save As... / Load Project buttons; _collect_project_data from
+  live model/state (video meta, srt path, subtitles, selection, voice name,
+  audio mapping+errors, composed/final refs); _write_project_file with
+  [PROJECT] logs; _on_save_project (Save As when new) / _on_save_project_as
+  (always dialog); _confirm_discard_unsaved (Save/Don't Save/Cancel via
+  askyesnocancel); _on_load_project (validate fully -> build Subtitle objects
+  -> apply; current state untouched on any failure); _apply_project_data in
+  spec order (stop playback, resolve paths, replace subtitles, clear+reapply
+  mappings incl. missing-file retention, voice match-or-warn without silent
+  substitution, tree rebuild via existing batch machinery, timeline rebuild,
+  selection restore, video metadata now + background reload via existing
+  worker when the file exists and differs (missing file -> metadata kept +
+  "Video file missing" placeholder), button refreshes, missing-file warnings,
+  project_path set + dirty=False).
+- Dirty tracking: _mark_project_dirty() hooked on SRT load, video load,
+  text/timing edit, timeline drag, batch/compose/export completion.
+- Supporting fix (required): _check_video_result now reschedules its poll at
+  the end of every run (perpetual poller) -- previously the loop died after
+  the first video load, which would strand project video restores (and any
+  second video load). No other polling/PLAN behavior changed.
+- tests/test_project_service.py (new, no GUI/Piper/FFmpeg): round-trips
+  (basic, Unicode-no-escape, multiline, timing, indexes, voices, selection,
+  audio/composed/final), int mapping keys, relative/absolute store+resolve,
+  missing-media references intact, all rejection classes, atomic save (no
+  .tmp leftovers), failed-load state safety, AppState project fields.
+- plan/plan14require.txt + plan14result.txt (this file): created.
+
+4. Files changed
+services/project_service.py (new), app/state.py, app/ui.py,
+tests/test_project_service.py (new), plan/plan14require.txt,
+plan/plan14result.txt. PLAN 10-13 synthesis/playback/timeline/editing/SRT/
+discovery/batch/compose/export paths: untouched except additive hooks.
+
+5. Project JSON format / path design / validation / restoration
+As in sections 3-4 and plan14require; relative paths anchor at the .vveproj
+directory; int subtitle indexes preserved end to end.
+
+6. Tests actually executed
+- NONE. `python -m py_compile services/project_service.py` / `app/ui.py`:
+  blocked (spawn EFTYPE). Unit tests, `python main.py`, GUI save/restart/
+  load, missing-media, malformed rejection, regression checks: not attempted
+  (same blocked path). All new tests written but UNRUN.
+
+7. Tests that failed
+- None observed (nothing could run). Grep audit confirmed single save/load
+  chain, all dirty hooks, no leftover .normalize() call, no duplicate defs.
+
+8. GUI verification
+- None by agent. Manual procedure: save -> restart -> load -> verify
+  subtitles/timing/voice/mapping/composed/final; missing-media project;
+  malformed file rejection with current state intact; dirty Save/Don't/Cancel
+  on Load; PLAN 10/11/12/13 regression.
+
+9. Environment limitations
+- All Python/shell execution returns `spawn EFTYPE` with no output.

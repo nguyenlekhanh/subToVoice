@@ -40,6 +40,10 @@ class AppState:
         self.final_mp4_request_id = None  # export request that produced it
         self.final_mp4_duration_s = None  # exported duration in seconds
 
+        # PLAN 14 project save/load.
+        self.project_path = None  # current .vveproj path
+        self.project_dirty = False  # unsaved changes present
+
     def clear_video_state(self):
         """Clear video-related state"""
         self.video_path = None

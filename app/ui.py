@@ -21,6 +21,16 @@ from services.piper_service import (
     wav_info,
 )
 from services.ffmpeg_service import FFmpegService, probe_mp4
+from services.project_service import (
+    FORMAT_ID,
+    SUPPORTED_VERSION,
+    ProjectError,
+    load_project,
+    resolve_path,
+    save_project,
+    store_path,
+)
+from models.subtitle import Subtitle
 from services.srt_service import SRTService, SRTParseError
 from services.video_service import VideoService, VideoLoadError
 
@@ -175,6 +185,15 @@ class VideoVoiceEditorApp:
 
         self.btn_save_srt = ttk.Button(toolbar, text="Save SRT", command=self._on_save_srt)
         self.btn_save_srt.pack(side=tk.LEFT, padx=2)
+
+        self.btn_save_project = ttk.Button(toolbar, text="Save Project", command=self._on_save_project)
+        self.btn_save_project.pack(side=tk.LEFT, padx=2)
+
+        self.btn_save_project_as = ttk.Button(toolbar, text="Save As...", command=self._on_save_project_as)
+        self.btn_save_project_as.pack(side=tk.LEFT, padx=2)
+
+        self.btn_load_project = ttk.Button(toolbar, text="Load Project", command=self._on_load_project)
+        self.btn_load_project.pack(side=tk.LEFT, padx=2)
 
         self.btn_generate_mp4 = ttk.Button(toolbar, text="Generate Final MP4", command=self._on_generate_mp4, state=tk.DISABLED)
         self.btn_generate_mp4.pack(side=tk.LEFT, padx=2)
@@ -874,6 +893,7 @@ class VideoVoiceEditorApp:
                         self.subtitle_tree.set(item, "end", self._format_timestamp_display(new_end_ms))
                         break
                 self._update_status(f"Moved subtitle {self._drag_subtitle.index}")
+                self._mark_project_dirty()
         except Exception as e:
             self._update_status(f"Error moving subtitle: {e}")
         
@@ -1424,6 +1444,7 @@ class VideoVoiceEditorApp:
                         f"Voice generation complete: {len(success_map)}/{total} "
                         f"succeeded, {len(errors)} failed.{note}"
                     )
+                    self._mark_project_dirty()
                     print("[VOICE BATCH]")
                     print(f"success={len(success_map)}")
                     print(f"failed={len(errors)}")
@@ -1553,6 +1574,7 @@ class VideoVoiceEditorApp:
                     self.state.composed_audio_duration_s = duration_s
                     self.state.composed_audio_request_id = request_id
                     self._update_status("Audio composition complete")
+                    self._mark_project_dirty()
                     print("[AUDIO COMPOSE]")
                     print(f"request_id={request_id}")
                     print(f"composed={output_path} duration={duration_s}s")
@@ -1695,10 +1717,14 @@ class VideoVoiceEditorApp:
             self._update_status("Video loaded")
             self._update_compose_button_state()
             self._update_export_button_state()
+            self._mark_project_dirty()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load video")
             messagebox.showerror("Load Video Failed", f"Failed to load video:\n{error_msg}")
+        # Perpetual poller (started once in __init__): keep consuming results
+        # so later loads (manual or project restore) are never missed.
+        self.root.after(50, self._check_video_result)
 
     def _update_video_state(self, metadata):
         """Update application state with video metadata"""
@@ -2231,6 +2257,7 @@ class VideoVoiceEditorApp:
             self._update_batch_button_state()
             self._update_compose_button_state()
             self._update_export_button_state()
+            self._mark_project_dirty()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load SRT: {error_msg}")
@@ -2464,6 +2491,7 @@ class VideoVoiceEditorApp:
             # Update timeline block
             self._rebuild_timeline()
             self._update_status(f"Updated {col_name} for subtitle {subtitle.index}")
+            self._mark_project_dirty()
             
         except ValueError as e:
             self._update_status(f"Error: {e}")
@@ -2566,6 +2594,276 @@ class VideoVoiceEditorApp:
     def _on_save_srt(self):
         self._update_status("Save SRT is not implemented yet.")
 
+    def _mark_project_dirty(self):
+        """Flag unsaved changes (minimal dirty tracking)."""
+        self.state.project_dirty = True
+
+    def _collect_project_data(self, project_file):
+        """Assemble the project document from live model/state (never widgets)."""
+        subtitles = [
+            {"index": sub.index, "start_ms": sub.start_ms, "end_ms": sub.end_ms,
+             "text": sub.text, "voice": sub.voice or ""}
+            for sub in self.state.subtitles
+        ]
+        voice = self.state.selected_voice
+        selected_index = None
+        if self.state.selected_subtitle is not None:
+            selected_index = self.state.selected_subtitle.index
+        return {
+            "format": FORMAT_ID,
+            "version": SUPPORTED_VERSION,
+            "video": {
+                "path": store_path(self.state.video_path, project_file)
+                if self.state.video_path else None,
+                "duration_ms": self.state.video_duration_ms,
+                "width": self.state.video_width,
+                "height": self.state.video_height,
+                "fps": self.state.video_fps,
+            },
+            "srt_path": store_path(self.state.srt_path, project_file)
+            if self.state.srt_path else None,
+            "subtitles": subtitles,
+            "selected_subtitle_index": selected_index,
+            "selected_voice_name": voice.name if voice is not None else None,
+            "audio": {
+                "voice_name": self.state.audio_voice_name,
+                "batch_id": self.state.audio_batch_id,
+                "subtitle_audio_paths": {
+                    str(index): store_path(path, project_file)
+                    for index, path in self.state.subtitle_audio_paths.items()
+                },
+                "subtitle_audio_errors": {
+                    str(index): message
+                    for index, message in self.state.subtitle_audio_errors.items()
+                },
+            },
+            "composed_audio": {
+                "path": store_path(self.state.composed_audio_path, project_file)
+                if self.state.composed_audio_path else None,
+                "duration_s": self.state.composed_audio_duration_s,
+                "request_id": self.state.composed_audio_request_id,
+            },
+            "final_mp4": {
+                "path": store_path(self.state.final_mp4_path, project_file)
+                if self.state.final_mp4_path else None,
+                "duration_s": self.state.final_mp4_duration_s,
+                "request_id": self.state.final_mp4_request_id,
+            },
+        }
+
+    def _write_project_file(self, project_file):
+        data = self._collect_project_data(project_file)
+        print("[PROJECT]")
+        print(f"saving path={project_file}")
+        print(f"subtitle_count={len(data['subtitles'])}")
+        print(f"video_path={data['video']['path']}")
+        print(f"audio_mapping_count={len(data['audio']['subtitle_audio_paths'])}")
+        print(f"composed_audio={data['composed_audio']['path']}")
+        print(f"final_mp4={data['final_mp4']['path']}")
+        saved = save_project(project_file, data)
+        self.state.project_path = str(saved)
+        self.state.project_dirty = False
+        self._update_status(f"Project saved: {saved}")
+
+    def _on_save_project(self):
+        """Save, asking for a path first when the project is new."""
+        try:
+            target = self.state.project_path
+            if not target:
+                return self._on_save_project_as()
+            self._write_project_file(target)
+        except ProjectError as exc:
+            self._update_status(f"Project save failed: {exc}")
+            messagebox.showerror("Save Project", f"Project save failed:\n{exc}")
+
+    def _on_save_project_as(self):
+        """Always ask for a path, then save."""
+        file_path = filedialog.asksaveasfilename(
+            title="Save Project As",
+            defaultextension=".vveproj",
+            filetypes=[("Video Voice Editor Project", "*.vveproj"),
+                       ("All files", "*.*")],
+        )
+        if not file_path:
+            return
+        try:
+            self._write_project_file(file_path)
+        except ProjectError as exc:
+            self._update_status(f"Project save failed: {exc}")
+            messagebox.showerror("Save Project", f"Project save failed:\n{exc}")
+
+    def _confirm_discard_unsaved(self):
+        """Protect Load Project from destroying unsaved work. True = proceed."""
+        if not self.state.project_dirty:
+            return True
+        answer = messagebox.askyesnocancel(
+            "Unsaved Changes",
+            "The current project has unsaved changes.\nSave before loading?",
+        )
+        if answer is None:
+            return False
+        if answer:
+            self._on_save_project()
+            return not self.state.project_dirty
+        return True
+
+    def _on_load_project(self):
+        """Validate first, then apply; never destroy state on failure."""
+        if not self._confirm_discard_unsaved():
+            return
+        file_path = filedialog.askopenfilename(
+            title="Load Project",
+            filetypes=[("Video Voice Editor Project", "*.vveproj"),
+                       ("All files", "*.*")],
+        )
+        if not file_path:
+            return
+        try:
+            data = load_project(file_path)
+        except ProjectError as exc:
+            self._update_status(f"Project load failed: {exc}")
+            messagebox.showerror("Load Project", f"Project load failed:\n{exc}")
+            return
+        try:
+            subtitle_objects = [
+                Subtitle(index=entry["index"], start_ms=entry["start_ms"],
+                         end_ms=entry["end_ms"], text=entry["text"],
+                         voice=entry.get("voice", ""))
+                for entry in data["subtitles"]
+            ]
+        except (ValueError, TypeError) as exc:
+            self._update_status(f"Project load failed: bad subtitle: {exc}")
+            messagebox.showerror(
+                "Load Project", f"Project load failed: bad subtitle: {exc}"
+            )
+            return
+        self._apply_project_data(data, file_path, subtitle_objects)
+
+    def _apply_project_data(self, data, project_file, subtitle_objects):
+        """Restore validated state, then refresh the GUI from the model."""
+        print("[PROJECT]")
+        print(f"loading path={project_file}")
+        print(f"subtitle_count={len(subtitle_objects)}")
+        self._stop_playback()
+
+        video_info = data.get("video", {}) or {}
+        saved_video = resolve_path(video_info.get("path"), project_file)
+        saved_duration = video_info.get("duration_ms", 0) or 0
+
+        self.state.srt_path = resolve_path(data.get("srt_path"), project_file)
+        self.state.subtitles = subtitle_objects
+        self.state.selected_subtitle = None
+        self.state.clear_audio_mappings()
+        self.state.clear_composed_audio()
+        self.state.clear_final_mp4()
+
+        audio_block = data.get("audio", {}) or {}
+        saved_mapping = audio_block.get("subtitle_audio_paths", {}) or {}
+        missing_audio = []
+        for index, stored in saved_mapping.items():
+            resolved = resolve_path(stored, project_file)
+            self.state.subtitle_audio_paths[index] = resolved
+            if not resolved or not Path(resolved).is_file():
+                missing_audio.append(index)
+        self.state.subtitle_audio_errors = {
+            int(key): message
+            for key, message in (audio_block.get("subtitle_audio_errors", {}) or {}).items()
+        }
+        self.state.audio_voice_name = audio_block.get("voice_name")
+        self.state.audio_batch_id = audio_block.get("batch_id")
+
+        composed_block = data.get("composed_audio", {}) or {}
+        self.state.composed_audio_path = resolve_path(composed_block.get("path"), project_file)
+        self.state.composed_audio_duration_s = composed_block.get("duration_s")
+        self.state.composed_audio_request_id = composed_block.get("request_id")
+
+        final_block = data.get("final_mp4", {}) or {}
+        self.state.final_mp4_path = resolve_path(final_block.get("path"), project_file)
+        self.state.final_mp4_duration_s = final_block.get("duration_s")
+        self.state.final_mp4_request_id = final_block.get("request_id")
+
+        saved_voice = data.get("selected_voice_name")
+        matched = False
+        if saved_voice:
+            for position, voice in enumerate(self._piper_voices):
+                if voice.name == saved_voice:
+                    self.voice_combo.current(position)
+                    self.state.selected_voice = voice
+                    matched = True
+                    break
+        if saved_voice and not matched:
+            self.state.selected_voice = None
+            self._update_status(f"Saved voice '{saved_voice}' is not available.")
+
+        self._clear_subtitle_tree()
+        self._batch_insert_subtitles = list(subtitle_objects)
+        self._batch_insert_index = 0
+        self._insert_batch()
+        self._rebuild_timeline()
+
+        selected_index = data.get("selected_subtitle_index")
+        if any(sub.index == selected_index for sub in subtitle_objects):
+            self._select_subtitle_by_index(selected_index)
+        elif subtitle_objects:
+            self._select_subtitle_by_index(subtitle_objects[0].index)
+
+        warnings = []
+        if saved_video and not Path(saved_video).is_file():
+            warnings.append(f"Video file missing: {saved_video}")
+        for index in missing_audio:
+            warnings.append(
+                f"Missing audio for subtitle #{index}: "
+                f"{self.state.subtitle_audio_paths.get(index)}"
+            )
+        if (self.state.composed_audio_path
+                and not Path(self.state.composed_audio_path).is_file()):
+            warnings.append(f"Missing composed audio: {self.state.composed_audio_path}")
+        if (self.state.final_mp4_path
+                and not Path(self.state.final_mp4_path).is_file()):
+            warnings.append(f"Missing Final MP4: {self.state.final_mp4_path}")
+
+        if saved_video and Path(saved_video).is_file():
+            if self.state.video_path != saved_video:
+                self.state.video_path = saved_video
+                self.state.video_duration_ms = saved_duration
+                self.state.video_width = video_info.get("width", 0) or 0
+                self.state.video_height = video_info.get("height", 0) or 0
+                self.state.video_fps = video_info.get("fps", 0.0) or 0.0
+                self.btn_load_video.config(state=tk.DISABLED)
+                self._update_status("Loading video...")
+                threading.Thread(
+                    target=self._video_load_worker, args=(saved_video,), daemon=True
+                ).start()
+        elif saved_video:
+            self.state.video_path = saved_video
+            self.state.video_duration_ms = saved_duration
+            self.state.video_width = video_info.get("width", 0) or 0
+            self.state.video_height = video_info.get("height", 0) or 0
+            self.state.video_fps = video_info.get("fps", 0.0) or 0.0
+            self._clear_video_preview()
+            self.video_preview_label.config(text="Video file missing")
+        else:
+            self.state.clear_video_state()
+            self._clear_video_preview()
+
+        self.state.project_path = str(Path(project_file))
+        self.state.project_dirty = False
+        self._update_preview_button_state()
+        self._update_batch_button_state()
+        self._update_compose_button_state()
+        self._update_export_button_state()
+        self._update_playback_controls_state()
+        self._update_position_display()
+        print(f"[PROJECT] audio_mapping_count={len(self.state.subtitle_audio_paths)}")
+        if warnings:
+            for warning in warnings:
+                print(f"[PROJECT] missing {warning}")
+            self._update_status(
+                f"Project loaded with {len(warnings)} missing file(s): {warnings[0]}"
+            )
+        else:
+            self._update_status(f"Project loaded: {project_file}")
+
     def _on_generate_mp4(self):
         """Validate inputs and start the Final MP4 export worker."""
         if self._export_generating:
@@ -2645,6 +2943,7 @@ class VideoVoiceEditorApp:
                     except Exception:
                         self.state.final_mp4_duration_s = None
                     self._update_status(f"Final MP4 created: {output_path}")
+                    self._mark_project_dirty()
                     messagebox.showinfo(
                         "Generate Final MP4", f"Final MP4 created:\n{output_path}"
                     )
