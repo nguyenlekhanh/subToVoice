@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from app.state import AppState
+from services.piper_service import PiperService
 from services.srt_service import SRTService, SRTParseError
 from services.video_service import VideoService, VideoLoadError
 
@@ -22,6 +23,10 @@ class VideoVoiceEditorApp:
         self.root = tk.Tk()
         self.state = AppState()
         self.video_service = VideoService()
+        self.piper_service = PiperService()
+        self._piper_load_thread = None
+        self._piper_result_queue = queue.Queue()
+        self._piper_voices = []
         self._srt_load_thread = None
         self._srt_result_queue = queue.Queue()
         self._batch_insert_index = 0
@@ -60,6 +65,7 @@ class VideoVoiceEditorApp:
         self._check_srt_result()
         self._check_video_result()
         self._check_playback_result()
+        self._check_piper_result()
 
     def _setup_window(self):
         """Configure main window"""
@@ -104,8 +110,11 @@ class VideoVoiceEditorApp:
         # 6. Subtitle area (Treeview)
         self._create_subtitle_area(right_panel)
 
-        # 7. Status bar
+        # 8. Status bar (must exist before voice area starts Piper discovery)
         self._create_status_bar(main_frame)
+
+        # 7. Piper voice selection
+        self._create_voice_area(right_panel)
 
     def _create_toolbar(self, parent):
         """Create top toolbar with buttons"""
@@ -907,6 +916,83 @@ class VideoVoiceEditorApp:
         # bound once in _create_timeline.
         self.timeline_canvas.bind("<B1-Motion>", self._on_timeline_mouse_drag)
         self.timeline_canvas.bind("<ButtonRelease-1>", self._on_timeline_mouse_release)
+
+    def _create_voice_area(self, parent):
+        """Create the Piper voice-selection area."""
+        frame = ttk.LabelFrame(parent, text="Piper Voice")
+        frame.pack(fill=tk.X, pady=(5, 0))
+
+        self.voice_var = tk.StringVar(value="Discovering Piper voices...")
+        self.voice_combo = ttk.Combobox(
+            frame,
+            textvariable=self.voice_var,
+            state=tk.DISABLED,
+            values=(),
+        )
+        self.voice_combo.pack(fill=tk.X, padx=10, pady=5)
+        self.voice_combo.bind("<<ComboboxSelected>>", self._on_voice_selected)
+        self._start_piper_discovery()
+
+    def _start_piper_discovery(self):
+        """Discover installed Piper voices without blocking the GUI."""
+        if self._piper_load_thread is not None and self._piper_load_thread.is_alive():
+            return
+        self.voice_var.set("Discovering Piper voices...")
+        self.voice_combo.config(state=tk.DISABLED, values=())
+        self._update_status("Discovering Piper voices...")
+        self._piper_load_thread = threading.Thread(
+            target=self._piper_discovery_worker,
+            daemon=True,
+        )
+        self._piper_load_thread.start()
+
+    def _piper_discovery_worker(self):
+        """Scan local voice directories and return the result to the GUI."""
+        try:
+            voices = self.piper_service.discover_voices()
+            self._piper_result_queue.put(("success", voices))
+        except Exception as exc:
+            self._piper_result_queue.put(("error", str(exc)))
+
+    def _check_piper_result(self):
+        """Consume one Piper discovery result on the Tkinter main thread."""
+        try:
+            status, payload = self._piper_result_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(100, self._check_piper_result)
+            return
+
+        if status != "success":
+            self._piper_voices = []
+            self.state.selected_voice = None
+            self.voice_combo.config(state=tk.DISABLED, values=())
+            self.voice_var.set("No Piper voices found")
+            self._update_status(f"Piper voice discovery failed: {payload}")
+            return
+
+        self._piper_voices = list(payload)
+        if not self._piper_voices:
+            self.state.selected_voice = None
+            self.voice_combo.config(state=tk.DISABLED, values=())
+            self.voice_var.set("No Piper voices found")
+            self._update_status("No Piper voices found")
+            return
+
+        names = [voice.name for voice in self._piper_voices]
+        labels = [
+            f"{voice.name} ({voice.source})" if names.count(voice.name) > 1 else voice.name
+            for voice in self._piper_voices
+        ]
+        self.voice_combo.config(state="readonly", values=tuple(labels))
+        self.voice_combo.current(0)
+        self.state.selected_voice = self._piper_voices[0]
+        self._update_status(f"Discovered {len(self._piper_voices)} Piper voices")
+
+    def _on_voice_selected(self, event=None):
+        """Store the user-selected Piper voice object."""
+        index = self.voice_combo.current()
+        if 0 <= index < len(self._piper_voices):
+            self.state.selected_voice = self._piper_voices[index]
 
     def _create_status_bar(self, parent):
         """Create status bar at bottom"""

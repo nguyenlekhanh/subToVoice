@@ -1,0 +1,177 @@
+PLAN 9 RESULT
+
+1. Date
+2026-09-27
+
+2. Status
+PARTIAL
+- Implementation is complete as code changes.
+- Runtime verification is blocked by the persistent tool/environment failure described below.
+- No GUI or discovery behavior is claimed as tested.
+
+3. Piper directories inspected
+- config/piper/ exists.
+- config/piper-en/ exists.
+- Both directories were inspected with filename listings.
+- No voice files were renamed, moved, copied, edited, or deleted.
+
+4. Files observed
+- config/piper/ contains filename pairs for:
+  banmai
+  chieuthanh
+  cuc
+  duyoryx3175
+  lacphi
+  maiphuong
+  manhdung
+  minhkhang
+  minhquang
+  ngochuyen
+  ngochuyennew
+  phuongtrang
+  taian2
+  vi_VN-vais1000-medium
+- Each of those names has both:
+  <name>.onnx
+  <name>.onnx.json
+- config/piper-en/ contains filename pairs for:
+  en_US-amy-medium
+  en_US-arctic-medium
+- Each of those names has both:
+  <name>.onnx
+  <name>.onnx.json
+- config/piper/voices.json and config/piper-en/voices.json exist but were not used as discovery sources and were left untouched.
+- That is 14 candidate filename pairs under config/piper/ and 2 under config/piper-en/, or 16 total candidate filename pairs.
+- Only three Piper model JSON samples were inspected to verify the metadata shapes actually present:
+  vi_VN-vais1000-medium.onnx.json
+  en_US-amy-medium.onnx.json
+  banmai.onnx.json
+- The discovery service itself did not execute in this environment, so these are filesystem pair candidates rather than runtime-confirmed discovery output.
+
+5. Discovery architecture
+- Added GUI-independent services/piper_service.py.
+- Added frozen PiperVoice with:
+  name
+  model_path
+  config_path
+  source
+  language
+  dataset
+  phoneme_type
+  sample_rate
+  num_speakers
+- Discovery searches config/piper/ first and config/piper-en/ second.
+- Discovery recursively accepts regular files whose extension is .onnx.
+- A voice is valid only when its matching <voice>.onnx.json regular file exists and parses as JSON.
+- Missing .onnx files, missing .json files, unreadable JSON, and malformed JSON are skipped.
+- Unexpected but parseable non-dictionary JSON yields safe empty metadata rather than crashing discovery.
+- Language is taken from language.code when present and falls back to espeak.voice.
+- Absolute resolved model and configuration paths identify unique voices and prevent duplicate physical entries.
+- No Piper executable is launched.
+- No audio is generated.
+- No TTS synthesis is implemented.
+
+6. Files changed
+- Created services/piper_service.py.
+- Created tests/test_piper_service.py.
+- Modified app/state.py to add selected_voice.
+- Modified app/ui.py to:
+  import PiperService
+  initialize Piper discovery thread, queue, and voice state
+  add a Piper Voice Combobox
+  discover voices in a daemon worker thread
+  consume the result through the existing queue/root.after pattern
+  populate and enable the Combobox only when voices exist
+  select the first voice by default
+  store the actual selected PiperVoice object
+  show "No Piper voices found" when appropriate
+- Created plan/plan9require.txt.
+- Created plan/plan9result.txt.
+
+7. UI changes
+- Added a simple "Piper Voice" LabelFrame below the subtitle area.
+- Added a read-only ttk.Combobox showing model-stem names.
+- Added source-directory qualifiers only when two voices share the same model stem.
+- Added no preview, synthesis, audio-generation, MP4, playback, Timeline, or Treeview behavior changes.
+
+8. State changes
+- Added AppState.selected_voice.
+- The value is either a PiperVoice object or None.
+- Existing subtitle, video, playback, and Timeline state behavior was not changed.
+
+9. Tests actually executed
+None through automated execution.
+
+10. Tests blocked
+- Attempted:
+  python -m py_compile "services/piper_service.py"
+  python -m py_compile "tests/test_piper_service.py"
+  python -m py_compile "app/ui.py"
+  python -m py_compile "app/state.py"
+  python -m py_compile "main.py"
+- Every attempt returned only:
+  spawn EFTYPE
+- No Python process output was produced.
+- The related import and unit-test commands were therefore not attempted separately because the same execution path was already known to be blocked.
+- The existing unit tests were reviewed but not executed.
+
+11. Manual verification performed
+None.
+- python main.py was not launched.
+- No video, SRT, Timeline, playback, editing, or voice-selection GUI interaction was performed.
+
+12. Remaining known issues
+- Runtime voice discovery still needs to be executed against the real config directories.
+- The first real run must confirm that all 16 candidate filename pairs are accepted and that no malformed model configuration is included.
+- GUI behavior, Combobox population, default selection, duplicate-name labels, and the no-voice path still require manual verification.
+- By design, the UI shows filename stems rather than the display names in the existing config/*/voices.json catalogs.
+
+13. PLAN 9 FIX 1 - PiperService import/API mismatch
+- Root cause: `app/ui.py` imports and instantiates `PiperService`, but `services/piper_service.py` previously exposed only `PiperVoice` and the module-level `discover_voices()` function.
+- Files changed:
+  - `services/piper_service.py`
+  - `plan/plan9result.txt`
+- Exact fix:
+  - Added a small GUI-independent `PiperService` class.
+  - The class accepts the same optional configuration root and voice-directory inputs.
+  - Its `discover_voices()` method delegates to the existing module-level discovery implementation.
+  - Existing `PiperVoice`, pairing rules, metadata parsing, duplicate handling, path handling, and invalid-file behavior were not changed.
+- Verification performed:
+  - `python -m py_compile services/piper_service.py`: blocked; tool returned `spawn EFTYPE`.
+  - `python -m py_compile app/ui.py`: blocked; tool returned `spawn EFTYPE`.
+  - `python -m py_compile main.py`: blocked; tool returned `spawn EFTYPE`.
+  - `python -c "from services.piper_service import PiperService, PiperVoice; print('Piper imports OK')"`: blocked; tool returned `spawn EFTYPE`.
+  - `python -c "import app.ui; print('UI import OK')"`: blocked; tool returned `spawn EFTYPE`.
+  - `python main.py`: blocked; tool returned `spawn EFTYPE`.
+- Tests passed: none through automated execution.
+- Tests blocked or not performed:
+  - All compile, import, unit-test, startup, and manual GUI checks remain unexecuted because every attempted Python command returned `spawn EFTYPE`.
+- Remaining known issues:
+  - The ImportError should be resolved by the new wrapper, but this has not yet been runtime-verified.
+  - Real discovery, Combobox behavior, and application startup still require manual verification.
+
+14. PLAN 9 FIX 2 RETRY - status_bar initialization order
+- Actual root cause: `_create_ui()` called `self._create_voice_area(right_panel)` before `self._create_status_bar(main_frame)`. `_create_voice_area()` calls `_start_piper_discovery()`, which calls `_update_status("Discovering Piper voices...")`, which calls `self.status_bar.config()`. `self.status_bar` is only assigned inside `_create_status_bar()`, so it did not exist yet.
+- Exact current code order found before fix:
+  - app/ui.py line 76 `def _create_ui(self):`
+  - line 111 `self._create_subtitle_area(right_panel)`
+  - line 114 `self._create_voice_area(right_panel)` -> line 934 `self._start_piper_discovery()` -> line 942 `self._update_status(...)` -> line 1010 `self.status_bar.config(text=message)`
+  - line 117 `self._create_status_bar(main_frame)` -> line 999 `self.status_bar = ttk.Label(...)`
+- Files changed:
+  - `app/ui.py` only.
+  - `services/piper_service.py` unchanged.
+- Exact fix:
+  - Moved `self._create_status_bar(main_frame)` before `self._create_voice_area(right_panel)` inside `_create_ui()`.
+  - `_create_status_bar()` is still called exactly once with parent `main_frame`; no second status bar created.
+  - No `try/except`, `hasattr`, `_update_status`, or Piper discovery logic changed.
+  - Searched `app/ui.py` for `_update_status(` and `status_bar`: the only startup-path call before the fix was line 942 in `_start_piper_discovery()`; all other `_update_status` calls are in event handlers, background-result handlers, video/SRT/playback/seek/save paths that run after `_create_ui()` completes.
+- Commands actually executed:
+  - `python -m py_compile app/ui.py`: blocked, tool returned `spawn EFTYPE`.
+  - `python -m py_compile services/piper_service.py`: blocked, tool returned `spawn EFTYPE`.
+  - `python main.py`: blocked, tool returned `spawn EFTYPE`.
+  - Remaining verify commands (`python -m py_compile main.py`, Piper/UI import checks) not attempted separately because the same execution path was already blocked.
+- Commands blocked: all Python execution via tool; no compile/import/startup output produced.
+- Manual GUI results: none performed; GUI open, status bar, voice area, Combobox population, Timeline, preview, subtitle list, playback controls not verified.
+- Remaining issues:
+  - Startup fix is code-inspection verified only, not runtime-verified.
+  - Still needs `python main.py` manual check for no traceback and Piper Combobox population.

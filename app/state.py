@@ -19,6 +19,7 @@ class AppState:
         self.srt_path = None
         self.subtitles = []
         self.selected_subtitle = None
+        self.selected_voice = None
         self.is_playing = False
         self.is_paused = False
         self.current_time_ms = 0

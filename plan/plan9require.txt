@@ -1,0 +1,43 @@
+PLAN 9 REQUIREMENTS
+
+Plan Number: 9
+Plan Name: Local Piper Voice Discovery and Display
+
+Goal: Discover locally installed Piper voices and display them in the existing GUI.
+
+Required Scope:
+- Inspect config/piper/ and config/piper-en/
+- Identify valid .onnx + .onnx.json pairs from the real filesystem
+- Create GUI-independent services/piper_service.py
+- Extract reliable metadata from Piper JSON configuration
+- Handle missing, malformed, duplicate, and invalid voice files safely
+- Add a simple Piper voice Combobox to the existing UI
+- Load voices in a background thread and update Tkinter on the main thread
+- Store the selected PiperVoice object in AppState
+- Preserve all existing video, SRT, playback, Timeline, and editing functionality
+
+Explicitly Not Implemented:
+- Piper TTS synthesis
+- Piper preview
+- Generate all voices
+- Audio composition
+- FFmpeg audio
+- Final MP4 rendering
+- Project save/load
+- Cloud services
+- Edge TTS
+
+Dependencies:
+- Python standard library only
+- Tkinter/ttk for display only
+- No new dependencies
+
+Completion Criteria:
+1. Valid Piper pairs are discovered from both directories when present.
+2. Invalid files do not crash discovery.
+3. Voice names are shown in the GUI.
+4. Voice selection updates application state.
+5. GUI remains responsive.
+6. Previous functionality still works.
+7. plan/plan9require.txt exists.
+8. plan/plan9result.txt exists with accurate implementation and test records.
