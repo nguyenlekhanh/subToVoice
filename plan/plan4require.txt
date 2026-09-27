@@ -1,0 +1,110 @@
+PLAN 4 REQUIREMENTS
+
+Plan Number: 4
+Plan Name: Load Video + Video Metadata + First Frame
+
+Goal: Implement video loading, metadata reading, audio detection, first frame extraction, and display in the GUI.
+
+Required Scope:
+- Load Video button functionality
+- FFmpeg detection (shutil.which)
+- FFprobe detection (shutil.which)
+- Video metadata reading via ffprobe (JSON output)
+- FPS parsing (rational values like 30000/1001)
+- Duration conversion to milliseconds
+- Frame count handling (None if unknown, not 0)
+- Audio stream detection
+- First frame extraction via FFmpeg
+- First frame display in Video Preview area (preserve aspect ratio)
+- Video information display near preview
+- Background worker for all FFmpeg/FFprobe operations
+- Queue/root.after UI updates
+- Video state in application state
+
+Explicitly NOT Implemented:
+- Video playback
+- Play/Pause
+- Seeking
+- Video timeline
+- Playhead
+- Subtitle timeline
+- Subtitle dragging
+- Subtitle timing editing
+- TTS
+- Piper
+- Voice generation
+- Audio mixing
+- Final MP4 rendering
+- Project save/load
+- Database
+- Web API
+
+Files to Modify/Create:
+1. app/state.py - Add video state fields
+2. services/video_service.py - Implement video metadata reading, first frame extraction
+3. app/ui.py - Implement Load Video button, video preview with image, metadata display
+4. tests/test_video_service.py - Unit tests for video service
+5. plan/plan4require.txt - This file
+6. plan/plan4result.txt - Implementation result log
+
+Dependencies:
+- Python standard library only (subprocess, json, shutil, threading, queue, pathlib, tempfile, uuid, tkinter)
+- No Pillow unless absolutely necessary (try PhotoImage first)
+- FFmpeg and FFprobe must be available in system PATH (not bundled)
+
+Detailed Requirements:
+
+VIDEO SERVICE (services/video_service.py):
+- VideoMetadata dataclass with: path, width, height, fps (float), frame_count (int or None), duration_ms (int), has_audio (bool), first_frame_path (str)
+- check_ffmpeg() -> bool: Verify ffmpeg and ffprobe are available
+- load_video_metadata(file_path) -> VideoMetadata: Run ffprobe, parse JSON, extract info
+- extract_first_frame(file_path, output_path) -> bool: Run ffmpeg to extract first frame
+- parse_fps(fps_str) -> float: Parse rational FPS like "30000/1001"
+- parse_duration(duration_str) -> int: Convert seconds to milliseconds
+
+UI CHANGES (app/ui.py):
+- Update _create_video_preview to support image display (Label with PhotoImage)
+- Add metadata display area below or beside video preview
+- _on_load_video: File dialog with video filters, start background worker
+- Background worker: call video_service functions, put result in queue
+- Main thread: update UI with first frame image, metadata labels, status
+- Status messages: "Loading video...", "Reading video metadata...", "Extracting first frame...", "Video loaded", "Failed to load video: <error>"
+- Preserve aspect ratio when displaying first frame
+- Handle missing FFmpeg/FFprobe gracefully
+- Handle invalid video files gracefully
+
+APPLICATION STATE (app/state.py):
+Add fields:
+- video_path
+- video_width
+- video_height
+- video_fps
+- video_frame_count
+- video_duration_ms
+- video_has_audio
+- video_first_frame_path
+
+TESTING:
+1. FPS rational parsing (30000/1001, 30/1, 24000/1001, etc.)
+2. Duration conversion
+3. Metadata parsing from ffprobe JSON
+4. Audio detection
+5. Missing frame count handling
+6. Invalid metadata handling
+7. Missing FFmpeg/FFprobe handling
+8. GUI manual test: load video, verify metadata, first frame, responsiveness
+
+Completion Criteria:
+1. Load Video button works
+2. File dialog opens with video filters
+3. FFmpeg/FFprobe detection works
+4. Video metadata read in background thread
+5. First frame extracted in background thread
+6. First frame displayed in Video Preview (aspect ratio preserved)
+7. Video metadata displayed (resolution, FPS, duration, frames, audio)
+8. Application state updated with video info
+9. GUI remains responsive during loading
+10. Errors handled gracefully (no crash)
+11. PLAN 1, 2, 3 functionality still works
+12. plan/plan4require.txt exists
+13. plan/plan4result.txt exists with accurate log

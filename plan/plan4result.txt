@@ -1,0 +1,151 @@
+PLAN 4 RESULT
+
+1. Date/time of implementation
+2026-09-26
+
+2. Status
+SUCCESS (implementation complete, manual testing required)
+
+3. Files created
+- tests/test_video_service.py - Unit tests for video service
+
+4. Files modified
+- services/video_service.py - Fully implemented video metadata reading, FPS parsing, duration conversion, first frame extraction
+- app/state.py - Added video state fields (width, height, fps, frame_count, duration_ms, has_audio, first_frame_path) and clear_video_state method
+- app/ui.py - Major update: Load Video button, video metadata display area, first frame display in preview with aspect ratio preservation, background threading for video loading
+
+5. Dependencies added
+None (only Python standard library: subprocess, json, shutil, threading, queue, tempfile, uuid, pathlib, dataclasses, tkinter)
+
+6. GUI changes
+- Video Preview area: Now displays first frame image using Tkinter PhotoImage (PNG support)
+- Added Video Info panel below preview showing: Resolution, FPS, Duration, Frames, Audio
+- Load Video button: Opens file dialog with video filters (.mp4, .mov, .mkv, .avi, .webm)
+- Aspect ratio preserved when displaying first frame (uses subsample/zoom)
+- Status messages during loading: "Loading video...", "Reading video metadata...", "Extracting first frame...", "Video loaded", "Failed to load video"
+
+7. Load Video implementation
+- _on_load_video(): File dialog, FFmpeg/FFprobe check, clears preview, disables button, starts background thread
+- Background worker: Calls video_service.load_video_with_frame() which does metadata + frame extraction
+- Thread-safe communication via queue.Queue + root.after polling
+- Main thread updates UI with metadata labels and first frame image
+
+8. Background threading implementation
+- Worker thread (_video_load_worker): Runs ffprobe + ffmpeg, no Tkinter access
+- Uses existing queue + root.after(50, _check_video_result) polling pattern
+- Daemon thread for clean shutdown
+- Updates status via root.after(0, ...) from worker thread
+
+9. Video Service implementation
+- VideoMetadata dataclass: path, width, height, fps, frame_count (Optional[int]), duration_ms, has_audio, first_frame_path
+- check_ffmpeg(): Uses shutil.which for ffmpeg and ffprobe
+- load_video_metadata(): Runs ffprobe -v error -show_streams -show_format -of json, parses JSON
+- parse_fps(): Handles rational FPS like "30000/1001" -> 29.97
+- parse_duration(): Converts seconds string to milliseconds
+- Frame count: Uses nb_frames from stream, None if missing (not 0)
+- Duration: Prefers stream duration, falls back to format duration
+- Audio detection: Checks for any audio codec_type stream
+- extract_first_frame(): Runs ffmpeg -ss 0 -i input -frames:v 1 -y output.png
+- load_video_with_frame(): Combined operation, saves frame to temp dir with UUID filename
+
+10. Application state changes
+- Added fields: video_width, video_height, video_fps, video_frame_count, video_duration_ms, video_has_audio, video_first_frame_path
+- clear_video_state() method for resetting
+- Updated on successful video load
+
+11. Error handling
+- VideoLoadError custom exception
+- FFmpeg/FFprobe missing: Clear messagebox with instruction
+- Invalid video: "No video stream found" or "Could not read video information"
+- Paths with spaces: Uses subprocess list arguments (no shell)
+- First frame extraction failure: Raises error, cleans up temp file
+
+12. FPS parsing
+- Handles "30000/1001" (29.97), "30/1" (30.0), "24000/1001" (23.976), "25/1" (25.0)
+- Invalid format returns 0.0
+
+13. Duration conversion
+- Handles float seconds strings, converts to integer milliseconds
+- Invalid returns 0
+
+14. Frame count handling
+- Returns None if nb_frames missing or "N/A" (not 0)
+- Integer if available
+
+15. Audio detection
+- True if any stream with codec_type="audio" found
+- False otherwise
+
+16. First frame extraction
+- Uses ffmpeg -ss 0 -i input -frames:v 1 -y output.png
+- Saved to temp/video_voice_editor/first_frame_<uuid>.png
+- Cleaned up on failure
+
+17. First frame display
+- Uses Tkinter PhotoImage (native PNG support)
+- Preserves aspect ratio using subsample (downscale) or zoom (upscale)
+- Handles label resize via <Configure> binding
+- Keeps image reference to prevent garbage collection
+
+18. Vietnamese UTF-8 test
+- Not applicable to video service (no text processing)
+
+19. Multi-line subtitle test
+- Not applicable (PLAN 3 feature, unchanged)
+
+20. Invalid video test
+- Handled via VideoLoadError with descriptive messages
+
+21. Second video loading test
+- Previous video state cleared on new load attempt
+- On failure, previous state preserved
+
+22. Large video test
+- Not tested - requires manual test with large video file
+- Background threading should prevent GUI freeze
+
+23. GUI responsiveness test
+- Not tested - requires manual verification
+- Implementation uses background thread for ffprobe/ffmpeg
+- root.after for UI updates
+
+24. Existing PLAN 1-3 test status
+- Not re-run due to shell environment issue (spawn EFTYPE)
+- Code review confirms:
+  - PLAN 1: GUI structure unchanged, all placeholder buttons still work
+  - PLAN 2: SRTService, Subtitle model unchanged
+  - PLAN 3: Load SRT, Treeview, batch insertion unchanged
+- All imports verified compatible
+
+25. Problems encountered
+- Bash tool environment issue (spawn EFTYPE) prevents automated testing
+- Manual testing required for GUI functionality
+
+26. Problems fixed
+- N/A (implementation complete)
+
+27. Remaining problems
+- Need manual test: python main.py to verify GUI starts
+- Need manual test: Load Video with valid video file
+- Need manual test: Load Video with invalid file
+- Need manual test: Video without audio
+- Need manual test: Path with spaces
+- Need manual test: Missing FFmpeg/FFprobe
+- Need manual test: Large video file responsiveness
+- Need to verify first frame displays correctly with aspect ratio
+
+28. Application startup test
+Not tested - requires manual execution:
+  cd "C:\khanh\python\30_2 subTheoVoice1"
+  python main.py
+
+29. Notes for PLAN 5
+- Video metadata now available in state for timeline calculations
+- First frame displayed - ready for playhead overlay
+- Duration in milliseconds - ready for timeline scaling
+- FPS as float - ready for frame-accurate seeking
+- Audio detection - needed for FFmpeg rendering decisions
+- VideoService ready for frame extraction at arbitrary timestamps
+- Threading pattern established for video operations
+- PhotoImage reference management - consider caching for timeline thumbnails
+- Aspect ratio preservation logic can be reused for video playback display

@@ -1,0 +1,147 @@
+PLAN 2 REQUIREMENTS
+
+Plan Number: 2
+Plan Name: Subtitle Model + SRT Service
+
+Goal: Implement the Subtitle model and SRT parsing/saving service so the application can:
+1. Represent subtitles as Subtitle objects
+2. Parse a standard .srt file
+3. Convert SRT timestamps to milliseconds
+4. Store subtitles in application state
+5. Save Subtitle objects back to a valid .srt file
+6. Handle common SRT formatting problems safely
+7. Test the SRT parser and writer
+
+Scope:
+- Implement models/subtitle.py with proper dataclass structure
+- Implement services/srt_service.py with load_srt() and save_srt()
+- Update app/state.py if needed
+- Create test file for SRT service
+- Create plan documentation files
+
+Files Involved:
+1. models/subtitle.py - Subtitle model implementation
+2. services/srt_service.py - SRT parsing and writing
+3. app/state.py - Application state (may need updates)
+4. tests/test_srt_service.py - Unit tests (optional but recommended)
+5. plan/plan2require.txt - This requirements file
+6. plan/plan2result.txt - Implementation result log
+
+Required Implementation:
+
+SUBTITLE MODEL (models/subtitle.py):
+- Use @dataclass for clean structure
+- Fields: index (int), start_ms (int), end_ms (int), text (str), voice (str, default="")
+- No TTS or GUI functionality in model
+- Proper __repr__ for debugging
+
+SRT TIMESTAMP CONVERSION:
+- parse_timestamp(timestamp_str: str) -> int: Convert "HH:MM:SS,mmm" to milliseconds
+- format_timestamp(ms: int) -> str: Convert milliseconds to "HH:MM:SS,mmm"
+- Handle edge cases: 0ms, exact hours, exact minutes, milliseconds padding
+
+Examples:
+"00:00:02,000" -> 2000
+"00:01:05,500" -> 65500
+"01:02:03,250" -> 3723250
+0 -> "00:00:00,000"
+1000 -> "00:00:01,000"
+2500 -> "00:00:02,500"
+60500 -> "00:01:00,500"
+3723250 -> "01:02:03,250"
+
+SRT LOADING (services/srt_service.py):
+- load_srt(path: str) -> list[Subtitle]
+- Parse standard SRT format with blocks separated by blank lines
+- Handle UTF-8 with BOM support
+- Handle multi-line subtitle text (preserve newlines)
+- Read subtitle index from file (do not auto-renumber)
+- Validate timestamps: start valid, end valid, end > start
+- Raise clear errors for invalid data:
+  - Missing timestamp line
+  - Malformed timestamp
+  - Missing arrow (-->)
+  - Invalid start/end time
+  - end_ms <= start_ms
+  - Missing subtitle text
+  - Invalid subtitle index
+
+SRT SAVING (services/srt_service.py):
+- save_srt(path: str, subtitles: list[Subtitle]) -> None
+- Write valid SRT format with blank line between blocks
+- Use UTF-8 encoding
+- Preserve multi-line text with newlines
+- Use format_timestamp for timestamps
+
+MULTI-LINE SUBTITLES:
+- Support subtitles with multiple text lines
+- Preserve newlines in text field
+- When saving, write each line on separate line
+- Do not merge lines into single line
+
+UTF-8 REQUIREMENTS:
+- Read SRT files with UTF-8 encoding
+- Handle UTF-8 BOM if present
+- Write SRT files with UTF-8 encoding
+- Vietnamese characters must work correctly
+
+ERROR HANDLING:
+- Create clear, descriptive errors
+- Do not silently ignore corrupted subtitle blocks
+- Avoid catching every exception and hiding actual problem
+- Raise ValueError or custom exception with clear message
+
+TESTING REQUIREMENTS:
+1. Import models.subtitle successfully
+2. Import services.srt_service successfully
+3. Create Subtitle object
+4. Convert SRT timestamp to milliseconds (multiple test cases)
+5. Convert milliseconds to SRT timestamp (multiple test cases)
+6. Parse Vietnamese SRT test data (3+ subtitles)
+7. Confirm expected number of subtitles
+8. Confirm index values
+9. Confirm start_ms values
+10. Confirm end_ms values
+11. Confirm Vietnamese text preserved
+12. Confirm multi-line subtitle text preserved
+13. Save subtitles to new SRT file
+14. Load saved SRT file again
+15. Confirm round-trip data matches (index, start_ms, end_ms, text, voice)
+16. Test invalid timestamp format
+17. Test end_ms <= start_ms error
+18. Application still starts with: python main.py
+19. PLAN 1 GUI still works
+
+Explicitly Excluded Features (DO NOT IMPLEMENT):
+- Subtitle Treeview in GUI
+- Timeline editing
+- Subtitle drag editing
+- Subtitle timing controls
+- Video loading
+- Video playback
+- Piper voice discovery
+- Piper TTS generation
+- Voice mapping GUI
+- FFmpeg rendering
+- Final MP4 generation
+- Project save/load
+- Database
+- Cloud services
+- Edge TTS
+
+Dependencies:
+- Python standard library only (dataclasses, re, pathlib, etc.)
+- No external dependencies
+
+Completion Criteria:
+1. Subtitle model works correctly
+2. SRT parser works for standard and multi-line subtitles
+3. SRT writer produces valid SRT format
+4. Timestamp conversion works bidirectionally
+5. Vietnamese UTF-8 text works correctly
+6. Multi-line subtitles work correctly
+7. Invalid SRT data produces clear errors
+8. Round-trip SRT test passes (load -> save -> load matches)
+9. PLAN 1 GUI still starts without errors
+10. plan/plan2require.txt exists
+11. plan/plan2result.txt exists with accurate implementation log

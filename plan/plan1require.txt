@@ -1,0 +1,94 @@
+PLAN 1 REQUIREMENTS
+
+Plan Number: 1
+Plan Name: Foundation & Basic GUI
+Goal: Create the initial project structure and a basic Tkinter GUI that starts successfully.
+
+Scope:
+- Create project directory structure
+- Create main.py entry point
+- Create application state management
+- Create basic Tkinter GUI with placeholder components
+- Create model for Subtitle
+- Create placeholder service modules
+- Create voices.json configuration
+- Create plan documentation files
+
+Files to Create:
+1. main.py - Application entry point
+2. app/__init__.py - App package init
+3. app/state.py - Application state object
+4. app/ui.py - Main GUI window with Tkinter
+5. models/__init__.py - Models package init
+6. models/subtitle.py - Subtitle model class
+7. services/__init__.py - Services package init
+8. services/srt_service.py - SRT service placeholder
+9. services/video_service.py - Video service placeholder
+10. services/tts_service.py - TTS service placeholder (Piper only)
+11. services/ffmpeg_service.py - FFmpeg service placeholder
+12. config/voices.json - Voice configuration (empty for now)
+13. plan/plan1require.txt - This requirements file
+14. plan/plan1result.txt - Implementation result log
+
+Features to Implement:
+- Project structure with all directories
+- Main window titled "Video Voice Editor"
+- Top toolbar with 5 buttons: Load Video, Load SRT, Play, Save SRT, Generate Final MP4
+- Video Preview area (placeholder frame with label)
+- Timeline area (placeholder frame with label)
+- Subtitle area (placeholder frame with label)
+- Status bar at bottom with initial "Ready" message
+- Placeholder button handlers that update status bar
+- Basic Subtitle model with index, start_ms, end_ms, text, voice fields
+- Placeholder service classes with NotImplementedError methods
+- Empty voices.json with "voices": [] array
+
+Features Explicitly NOT to Implement:
+- SRT parsing or loading
+- Subtitle editing or Treeview
+- Video playback
+- Timeline editing or drag-and-drop
+- Piper TTS integration
+- Edge TTS (explicitly forbidden)
+- FFmpeg rendering
+- Final MP4 generation
+- Project save/load
+- Database functionality
+- Any unnecessary frameworks or dependencies
+
+Testing Requirements:
+1. All Python files import successfully without errors
+2. Application starts with: uv run main.py
+3. Window title displays "Video Voice Editor"
+4. All 5 toolbar buttons visible
+5. Video Preview, Timeline, Subtitles areas visible
+6. Status bar visible with "Ready"
+7. Clicking each button updates status bar without crashing
+8. plan/plan1require.txt exists
+9. plan/plan1result.txt exists with accurate implementation log
+
+Architecture Rules:
+- Keep GUI code separate from services
+- Keep application state separate from GUI widgets
+- Heavy operations must NOT run on Tkinter main thread (future)
+- Video decoding must run outside GUI thread (future)
+- SRT parsing must run outside GUI thread when appropriate (future)
+- Piper TTS generation must run outside GUI thread (future)
+- FFmpeg rendering must run outside GUI thread (future)
+- GUI updates must happen on Tkinter main thread
+- Use root.after() for safe GUI updates (future)
+- Do not redraw entire timeline continuously during playback (future)
+- Keep modules small and easy to debug
+- Do not over-engineer
+- Do not add dependencies unless necessary
+
+Completion Criteria:
+1. Project structure exists
+2. Basic GUI starts successfully
+3. No import errors exist
+4. Placeholder buttons work without crashing
+5. plan/plan1require.txt exists
+6. plan/plan1result.txt exists
+7. plan1result.txt accurately describes what was implemented and tested
+
+STOP after PLAN 1 - Do not continue to PLAN 2.

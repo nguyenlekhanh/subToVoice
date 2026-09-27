@@ -1,0 +1,699 @@
+Được chứ. **Nếu bạn đã có sẵn thư mục Piper Vietnamese voice thì mình còn khuyên dùng Piper cho project này**, thay vì Edge TTS.
+
+Ưu điểm:
+
+- Chạy **local**, không cần Internet.
+- Không phụ thuộc API/cloud.
+- Generate hàng loạt subtitle khá phù hợp.
+- Có thể giữ nguyên voice model trong máy.
+- Dễ tích hợp vào Python.
+- Không lo Edge TTS thay đổi hoặc mất mạng.
+
+### Nhưng cần biết một điểm
+
+Piper không phải chỉ có một file voice. Thường một voice sẽ có cặp:
+
+```text
+vi_voice/
+├── something.onnx
+└── something.onnx.json
+```
+
+hoặc thư mục có dạng:
+
+```text
+piper/
+├── voices/
+│   ├── vi_*.onnx
+│   ├── vi_*.onnx.json
+│   └── ...
+```
+
+Nếu bạn có **thư mục Piper Vietnamese voice rồi**, mình có thể thiết kế app để **quét thư mục đó tự động**.
+
+Ví dụ:
+
+```text
+config/
+└── piper_voices/
+    ├── voice1.onnx
+    ├── voice1.onnx.json
+    ├── voice2.onnx
+    └── voice2.onnx.json
+```
+
+GUI sẽ tự hiện:
+
+```text
+Voice:
+[ voice1 ▼ ]
+
+[Preview Voice]
+[Apply Voice]
+```
+
+---
+
+## Mình sẽ đổi architecture
+
+Thay vì:
+
+```text
+Edge TTS
+```
+
+đổi thành:
+
+```text
+Piper TTS
+```
+
+Architecture:
+
+```text
+SRT
+ ↓
+Subtitle Model
+ ↓
+Voice Mapping
+ ↓
+Piper
+ ↓
+WAV
+ ↓
+FFmpeg
+ ↓
+Final MP4
+```
+
+Ví dụ:
+
+```text
+Subtitle 1
+00:02 → 00:04
+"Mẹ ơi, ba ơi..."
+       ↓
+Piper Voice A
+       ↓
+tts_0001.wav
+
+Subtitle 2
+00:04.5 → 00:06.5
+"Ừ, duyệt cho con luôn."
+       ↓
+Piper Voice B
+       ↓
+tts_0002.wav
+```
+
+Sau đó FFmpeg ghép chúng vào đúng timeline.
+
+---
+
+## Quan trọng: đừng để OpenCode tự đoán Piper
+
+Mình sẽ sửa các PLAN trước thành:
+
+```text
+PLAN 1
+Project skeleton
+
+PLAN 2
+Subtitle model + SRT
+
+PLAN 3
+SRT GUI
+
+PLAN 4
+Video loading
+
+PLAN 5
+Video playback
+
+PLAN 6
+Timeline
+
+PLAN 7
+Subtitle blocks
+
+PLAN 8
+Subtitle editing
+
+PLAN 9
+Piper voice discovery
+
+PLAN 10
+Piper preview
+
+PLAN 11
+Generate all voices
+
+PLAN 12
+FFmpeg audio composition
+
+PLAN 13
+Final MP4
+
+PLAN 14
+Project save/load
+
+PLAN 15
+Cleanup/error handling
+```
+
+**Không cần `edge-tts` nữa.**
+
+---
+
+### Một việc mình cần biết trước khi viết PLAN 9
+
+Bạn hãy cho mình biết **thư mục Piper voice của bạn hiện đang chứa những file gì**.
+
+Ví dụ mở thư mục đó và gửi mình ảnh hoặc copy tên file kiểu:
+
+```text
+vi_VN-xxx.onnx
+vi_VN-xxx.onnx.json
+```
+
+Nếu có cả:
+
+```text
+piper.exe
+```
+
+thì gửi luôn tên file đó.
+
+**Không cần upload cả thư mục. Chỉ cần screenshot danh sách file là được.** Sau đó mình sẽ thiết kế PLAN Piper chính xác theo bộ voice bạn đang có, thay vì để OpenCode đoán đường dẫn và tên model.
+
+
+11111111111111111
+Được 👍 Cách này rất hợp với project này. Mình nên bắt OpenCode **mỗi Plan có 2 file log riêng** để sau này Plan 2, 3... đọc lại được lịch sử và không làm hỏng những gì đã hoàn thành.
+
+Ví dụ:
+
+```text
+video_voice_editor/
+├── plan/
+│   ├── plan1require.txt
+│   ├── plan1result.txt
+│   ├── plan2require.txt
+│   ├── plan2result.txt
+│   └── ...
+├── main.py
+├── app/
+├── services/
+├── models/
+├── config/
+├── temp/
+└── output/
+```
+
+Mình cũng thêm rule: **OpenCode chỉ làm đúng Plan hiện tại, xong phải test, ghi result log rồi mới dừng.**
+
+Đây là prompt Plan 1 hoàn chỉnh để bạn copy vào OpenCode:
+
+Create PLAN 1 only for a new Python desktop application called "Video Voice Editor".
+
+IMPORTANT:
+Do not implement PLAN 2 or any later plan.
+Do not implement SRT parsing, video playback, timeline editing, Piper TTS, or FFmpeg rendering yet.
+
+The project must be built incrementally. Every plan must leave the application in a working state.
+
+==================================================
+PLAN 1 GOAL
+==================================================
+
+Create the initial project structure and a basic Tkinter GUI that starts successfully.
+
+The application will eventually be a desktop video + subtitle + voice editor, but PLAN 1 is only the foundation.
+
+==================================================
+PROJECT STRUCTURE
+==================================================
+
+Create:
+
+video_voice_editor/
+├── main.py
+├── plan/
+│   ├── plan1require.txt
+│   └── plan1result.txt
+├── app/
+│   ├── __init__.py
+│   ├── state.py
+│   └── ui.py
+├── services/
+│   ├── __init__.py
+│   ├── srt_service.py
+│   ├── video_service.py
+│   ├── tts_service.py
+│   └── ffmpeg_service.py
+├── models/
+│   ├── __init__.py
+│   └── subtitle.py
+├── config/
+│   └── voices.json
+├── temp/
+└── output/
+
+If pyproject.toml already exists, keep it.
+If it does not exist, create it only if needed for the project.
+
+==================================================
+PYTHON
+==================================================
+
+Use Python 3.12.
+
+The application must run with:
+
+uv run main.py
+
+Use Tkinter for the GUI.
+
+Do not add unnecessary dependencies in PLAN 1.
+
+==================================================
+MAIN.PY
+==================================================
+
+main.py should be very simple.
+
+Its main job is to start the application.
+
+Do not put GUI implementation directly inside main.py.
+
+The basic structure should be:
+
+main.py
+    ↓
+app/ui.py
+    ↓
+application window
+
+==================================================
+APP STATE
+==================================================
+
+Create app/state.py.
+
+Create a simple application state object.
+
+For now it only needs basic placeholders such as:
+
+- video_path
+- srt_path
+- subtitles
+- selected_subtitle
+- is_playing
+- current_time_ms
+
+Do not implement actual video or subtitle functionality yet.
+
+Keep this simple.
+
+==================================================
+GUI
+==================================================
+
+Create app/ui.py.
+
+Window title:
+
+Video Voice Editor
+
+Create a clean basic layout.
+
+The window should contain:
+
+1. Top toolbar
+
+Buttons:
+
+- Load Video
+- Load SRT
+- Play
+- Save SRT
+- Generate Final MP4
+
+These are placeholders only in PLAN 1.
+
+They do not need to perform their final functionality yet.
+
+They may update the status bar with a simple message such as:
+
+"Load Video is not implemented yet."
+
+2. Video preview area
+
+Create an empty placeholder frame.
+
+Display something simple such as:
+
+Video Preview
+
+Do not implement video playback.
+
+3. Timeline area
+
+Create an empty placeholder frame.
+
+Display:
+
+Timeline
+
+Do not implement timeline functionality.
+
+4. Subtitle area
+
+Create an empty placeholder area.
+
+Display:
+
+Subtitles
+
+Do not implement SRT loading or Treeview functionality yet.
+
+5. Status bar
+
+Add a status bar at the bottom.
+
+Initial status:
+
+Ready
+
+==================================================
+MODEL
+==================================================
+
+Create models/subtitle.py.
+
+Create a simple Subtitle model.
+
+It should eventually represent:
+
+- index
+- start_ms
+- end_ms
+- text
+- voice
+
+For PLAN 1, only create the model structure.
+
+Do not implement SRT parsing.
+
+==================================================
+SERVICE MODULES
+==================================================
+
+Create these files:
+
+services/srt_service.py
+services/video_service.py
+services/tts_service.py
+services/ffmpeg_service.py
+
+For PLAN 1, these can contain only placeholder classes/functions or comments explaining their future purpose.
+
+Do not implement their real functionality yet.
+
+IMPORTANT:
+
+TTS will eventually use LOCAL PIPER Vietnamese voices.
+
+Do NOT install or implement Edge TTS.
+
+Do NOT design the TTS system around Edge TTS.
+
+Piper configuration will be handled in a later plan after the actual Piper voice files are inspected.
+
+==================================================
+VOICES.JSON
+==================================================
+
+Create:
+
+config/voices.json
+
+For PLAN 1, keep it minimal.
+
+Example:
+
+{
+    "voices": []
+}
+
+Do not guess Piper model filenames.
+
+Do not add fake Piper model paths.
+
+Do not assume the user's Piper voice folder structure.
+
+Piper voice discovery will be implemented in a later plan.
+
+==================================================
+PLAN LOGGING SYSTEM
+==================================================
+
+This is VERY IMPORTANT.
+
+Create a folder:
+
+plan/
+
+For every plan, there will be two files:
+
+planNrequire.txt
+planNresult.txt
+
+For PLAN 1 create:
+
+plan/plan1require.txt
+plan/plan1result.txt
+
+==================================================
+PLAN1REQUIRE.TXT
+==================================================
+
+Write the PLAN 1 requirements into:
+
+plan/plan1require.txt
+
+This file should contain:
+
+- Plan number
+- Plan name
+- Goal
+- Scope
+- Files to create
+- Features to implement
+- Features explicitly NOT to implement
+- Testing requirements
+- Architecture rules
+- Completion criteria
+
+The file should be clear enough that another developer can understand exactly what PLAN 1 was supposed to do.
+
+==================================================
+PLAN1RESULT.TXT
+==================================================
+
+After implementation is complete, create:
+
+plan/plan1result.txt
+
+This file must be a real implementation log.
+
+Include:
+
+PLAN 1 RESULT
+
+1. Date/time of implementation
+
+2. Status
+   - SUCCESS
+   - PARTIAL
+   - FAILED
+
+3. Files created
+
+4. Files modified
+
+5. Dependencies added
+
+6. Features implemented
+
+7. Features intentionally not implemented
+
+8. Tests performed
+
+9. Test results
+
+10. Problems encountered
+
+11. Problems fixed
+
+12. Remaining problems
+
+13. How to run the application
+
+14. Notes for PLAN 2
+
+The "Notes for PLAN 2" section is important.
+
+Record anything PLAN 2 needs to know about the current implementation.
+
+Do not claim something works unless it was actually tested.
+
+==================================================
+IMPORTANT LOGGING RULE
+==================================================
+
+The plan requirement file records what was requested.
+
+The result file records what actually happened.
+
+Never overwrite the original requirements with the result.
+
+Do not hide failures.
+
+If something fails, write the failure into plan1result.txt.
+
+==================================================
+ARCHITECTURE RULES
+==================================================
+
+The application will eventually contain:
+
+Video
+    ↓
+Subtitle Timeline
+    ↓
+Subtitle Timing
+    ↓
+Voice Mapping
+    ↓
+Local Piper TTS
+    ↓
+WAV files
+    ↓
+FFmpeg
+    ↓
+Final MP4
+
+PLAN 1 must NOT implement this pipeline yet.
+
+Future architecture must follow these rules:
+
+1. Keep GUI code separate from services.
+
+2. Keep application state separate from GUI widgets.
+
+3. Heavy operations must NOT run on the Tkinter main thread.
+
+4. Future video decoding must run outside the GUI thread.
+
+5. Future SRT parsing must run outside the GUI thread when appropriate.
+
+6. Future Piper TTS generation must run outside the GUI thread.
+
+7. Future FFmpeg rendering must run outside the GUI thread.
+
+8. GUI updates must happen on the Tkinter main thread.
+
+9. Use root.after() or equivalent for safe GUI updates.
+
+10. Do not redraw the entire timeline continuously during video playback.
+
+11. Keep modules small and easy to debug.
+
+12. Do not over-engineer the project.
+
+13. Do not add dependencies unless necessary.
+
+==================================================
+TESTING
+==================================================
+
+After implementation:
+
+1. Check that all Python files import successfully.
+
+2. Run:
+
+uv run main.py
+
+3. Confirm the GUI starts.
+
+4. Confirm the window title is:
+
+Video Voice Editor
+
+5. Confirm the main buttons are visible.
+
+6. Confirm Video Preview, Timeline, and Subtitles areas are visible.
+
+7. Confirm the status bar is visible.
+
+8. Click each placeholder button and confirm the application does not crash.
+
+9. Check that plan/plan1require.txt exists.
+
+10. Check that plan/plan1result.txt exists.
+
+If possible, perform a basic syntax/import check before launching the GUI.
+
+==================================================
+DO NOT DO THESE THINGS
+==================================================
+
+Do NOT:
+
+- implement SRT parsing
+- load an SRT file
+- implement subtitle editing
+- implement video playback
+- implement timeline editing
+- implement drag and drop timing
+- implement Piper TTS
+- install Edge TTS
+- install Piper automatically
+- guess Piper model names
+- implement FFmpeg rendering
+- generate final MP4
+- add project save/load
+- implement database functionality
+- add unnecessary frameworks
+- redesign the architecture beyond what is needed for PLAN 1
+- continue to PLAN 2
+
+==================================================
+COMPLETION RULE
+==================================================
+
+PLAN 1 is complete only when:
+
+1. Project structure exists.
+
+2. Basic GUI starts successfully.
+
+3. No import errors exist.
+
+4. Placeholder buttons work without crashing.
+
+5. plan/plan1require.txt exists.
+
+6. plan/plan1result.txt exists.
+
+7. plan1result.txt accurately describes what was actually implemented and tested.
+
+STOP after PLAN 1.
+
+Do not continue to PLAN 2 automatically.
+
+Cách này sẽ rất dễ quản lý về sau. Mỗi lần mình đưa bạn **PLAN 2**, OpenCode có thể đọc `plan1require.txt` + `plan1result.txt` trước rồi mới làm tiếp, nên ít bị tình trạng sửa code cũ lung tung.
+
+
+1111111111111111

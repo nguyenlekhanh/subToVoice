@@ -1,0 +1,158 @@
+PLAN 3 REQUIREMENTS
+
+Plan Number: 3
+Plan Name: SRT Loading & Subtitle Treeview GUI
+
+Goal: Connect the existing SRT service to the GUI so users can load and view subtitles in a Treeview.
+
+Scope:
+- Implement Load SRT button with file dialog
+- Background thread for SRT parsing (keep GUI responsive)
+- Replace placeholder Subtitle area with ttk.Treeview
+- Display subtitles with columns: #, Start, End, Subtitle, Voice
+- Batch insert Treeview rows for large files
+- Show status updates during loading
+- Handle SRT errors gracefully
+- Store parsed subtitles in application state
+
+Files Involved:
+1. app/ui.py - Main GUI implementation (major changes)
+2. app/state.py - Application state (minor updates if needed)
+3. services/srt_service.py - Already implemented, just used
+4. models/subtitle.py - Already implemented, just used
+5. tests/test_srt_gui.py - Optional GUI integration tests
+6. plan/plan3require.txt - This requirements file
+7. plan/plan3result.txt - Implementation result log
+
+Required Implementation:
+
+GUI CHANGES (app/ui.py):
+
+1. Replace _create_subtitle_area() with real Treeview:
+   - ttk.Treeview with columns: index, start, end, text, voice
+   - Headings: #, Start, End, Subtitle, Voice
+   - Vertical and horizontal scrollbars
+   - Initial column widths: #=50, Start=110, End=110, Subtitle=500, Voice=120
+
+2. Load SRT button handler (_on_load_srt):
+   - Open filedialog.askopenfilename with *.srt filter
+   - If cancelled, return early
+   - Clear existing Treeview
+   - Disable Load SRT button during loading
+   - Update status: "Loading SRT..."
+   - Start background worker thread
+
+3. Background worker thread:
+   - Call SRTService.load_srt(file_path)
+   - On success: pass subtitles list to main thread
+   - On error: pass exception to main thread
+   - Use thread-safe communication (queue or callback with root.after)
+
+4. Main thread result handler:
+   - Re-enable Load SRT button
+   - If error: show messagebox, update status with error, keep previous subtitles if any
+   - If success: update AppState.srt_path and AppState.subtitles, populate Treeview in batches
+
+5. Batch Treeview insertion:
+   - Insert rows in batches of 50-100
+   - Use root.after() between batches
+   - Update status per batch: "Loading subtitles X / Y"
+   - Final status: "Loaded Y subtitles"
+
+6. Timestamp display:
+   - Internal: milliseconds (Subtitle.start_ms, end_ms)
+   - Treeview display: HH:MM:SS.mmm format (note: dot instead of comma)
+   - Reuse SRTService.format_timestamp() but replace comma with dot
+   - Create helper function format_timestamp_display(ms) -> "HH:MM:SS.mmm"
+
+7. Multi-line subtitle text:
+   - Treeview cell displays first line or truncated text
+   - Internal Subtitle.text must preserve newlines unchanged
+   - Do not modify data for display purposes
+
+8. Voice column:
+   - Display Subtitle.voice (empty string for now)
+   - No voice selection UI yet
+
+THREADING REQUIREMENTS:
+- Worker thread: ONLY calls SRTService.load_srt(), no Tkinter access
+- Main thread: ALL Tkinter widget updates via root.after() callbacks
+- Use threading.Thread with daemon=True
+- Use queue.Queue or simple callback pattern for thread communication
+
+ERROR HANDLING:
+- Catch SRTParseError, FileNotFoundError, OSError, UnicodeDecodeError
+- Show user-friendly messagebox with error summary
+- Update status bar with error
+- Re-enable Load SRT button
+- Do not crash application
+
+APPLICATION STATE (app/state.py):
+- After successful load: state.srt_path = file_path, state.subtitles = subtitles
+- Clear state.subtitles only after successful parse
+- Preserve previous valid data if new load fails
+
+TREEVIEW DETAILS:
+- Columns: ("index", "start", "end", "text", "voice")
+- Show headings
+- Selectmode: "browse" (single selection)
+- Bind <<TreeviewSelect>> to update state.selected_subtitle if needed
+
+STATUS BAR MESSAGES:
+- "Ready" (initial)
+- "Loading SRT..." (after file selected)
+- "Loading subtitles 100 / 500" (during batch insert)
+- "Loaded 500 subtitles" (complete)
+- "Failed to load SRT: <error>" (on error)
+
+TESTING REQUIREMENTS:
+1. Subtitle model still works
+2. SRT parsing still works (PLAN 2 tests pass)
+3. Timestamp formatting for GUI works (HH:MM:SS.mmm)
+4. Valid SRT loads successfully through GUI
+5. Vietnamese text displays correctly in Treeview
+6. Multi-line subtitle data preserved in state
+7. Treeview displays parsed subtitle data
+8. Loading invalid SRT shows error, doesn't crash
+9. Cancelling file dialog does nothing
+10. Loading second SRT replaces first correctly
+11. Application state contains correct subtitles after load
+12. GUI starts successfully
+13. Large SRT test (500+ subtitles) - GUI remains responsive
+
+LARGE SRT TEST:
+- Create test SRT with 500-1000 subtitles
+- Load through GUI
+- Verify: responsive during insert, batches visible, status updates, no freeze
+
+EXPLICITLY EXCLUDED:
+- Video loading/playback
+- Timeline
+- Subtitle editing/drag
+- Piper TTS/voice mapping
+- FFmpeg/MP4 generation
+- Save SRT button (placeholder OK)
+- Project save/load
+- Database
+
+DEPENDENCIES:
+- Python standard library only
+- Tkinter, ttk, threading, queue, filedialog, messagebox
+
+COMPLETION CRITERIA:
+1. Load SRT button works
+2. File dialog opens, selects .srt
+3. SRT parsing runs in background thread
+4. Subtitles stored in AppState
+5. Treeview displays: #, Start, End, Subtitle, Voice
+6. Timestamps show HH:MM:SS.mmm
+7. Vietnamese text displays correctly
+8. Multi-line data preserved in state
+9. Batch insertion (50-100 rows/callback)
+10. Large SRT doesn't block GUI
+11. SRT errors don't crash app
+12. Second SRT replaces first correctly
+13. PLAN 1 GUI still starts
+14. PLAN 2 functionality works
+15. plan/plan3require.txt exists
+16. plan/plan3result.txt exists with accurate log

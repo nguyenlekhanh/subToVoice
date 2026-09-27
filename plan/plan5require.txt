@@ -1,0 +1,122 @@
+PLAN 5 REQUIREMENTS
+
+Plan Number: 5
+Plan Name: Video Playback
+
+Goal: Implement basic video playback inside the existing Video Voice Editor GUI.
+
+Required Scope:
+- Play button functionality
+- Pause button functionality
+- Stop button functionality
+- Current playback position display
+- Seek control (Tkinter Scale)
+- Frame preview updates during playback
+- Background worker for frame extraction
+- GUI responsiveness during playback
+- Playback state handling (playing, paused, stopped, ended)
+- Error handling
+
+Explicitly NOT Implemented:
+- Subtitle timing editing
+- Subtitle dragging
+- Timeline subtitle blocks
+- Subtitle selection synchronization
+- TTS
+- Piper
+- Voice generation
+- Audio composition
+- Final MP4 rendering
+- Project save/load
+- Full professional video editor timeline
+- Waveform
+- Frame-by-frame editor
+- Complex video effects
+- Video editing or cutting
+
+Files to Modify/Create:
+1. app/state.py - Add playback state fields
+2. services/video_service.py - Add frame extraction at timestamp
+3. app/ui.py - Add playback controls, seek bar, position display, playback worker
+4. tests/test_playback.py - Unit tests for playback logic
+5. plan/plan5require.txt - This file
+6. plan/plan5result.txt - Implementation result log
+
+Dependencies:
+- Python standard library only (subprocess, threading, queue, time, tkinter)
+- No Pillow unless absolutely necessary
+- FFmpeg and FFprobe must be available in system PATH
+
+Detailed Requirements:
+
+VIDEO SERVICE (services/video_service.py):
+- extract_frame_at_timestamp(file_path, timestamp_ms, output_path) -> bool: Extract frame at specific time
+- Use ffmpeg -ss timestamp -i input -frames:v 1 -y output.png
+- Handle seeking efficiently with -ss before -i for faster seeks
+
+APPLICATION STATE (app/state.py):
+Add fields:
+- is_playing (bool)
+- is_paused (bool)
+- current_time_ms (int) - already exists
+- video_duration_ms (int) - already exists
+
+UI CHANGES (app/ui.py):
+1. Replace Play button with Play/Pause/Stop buttons
+2. Add playback control area below Video Info:
+   - [Play] [Pause] [Stop] buttons
+   - Position label: "00:00.000 / 00:12.500"
+   - Seek Scale: 0 to duration_ms
+3. Background playback worker:
+   - Extract frames at current position
+   - Update preview via queue + root.after
+   - Update position label and seek bar
+4. Playback timing:
+   - Use time.monotonic() for elapsed time
+   - Request frame at current_position_ms
+   - Auto-stop at end of video
+5. Seek behavior:
+   - On scale release: update position, extract frame, update preview
+   - If playing: continue from new position
+   - If paused: stay paused, show new frame
+6. State transitions:
+   - Stopped -> Playing (Play)
+   - Playing -> Paused (Pause)
+   - Paused -> Playing (Play)
+   - Playing -> Stopped (Stop or end)
+   - Paused -> Stopped (Stop)
+
+PLAYBACK WORKER:
+- Single worker thread
+- threading.Event for stop signal
+- Extract frame -> queue.put(("frame", frame_path, position_ms))
+- Main thread updates UI via root.after
+- Clean stop when video ends or user stops
+
+ERROR HANDLING:
+- No video loaded: show status, disable controls
+- FFmpeg missing: handled by existing check
+- Frame extraction failure: log, continue
+- Seeking failure: show error, revert
+
+TESTING:
+1. Time formatting
+2. Position clamping
+3. Duration handling
+4. Seek position handling
+5. Playback state transitions
+6. Manual GUI test with video file
+
+Completion Criteria:
+1. Play button starts playback
+2. Pause button pauses playback
+3. Stop button stops and resets position
+4. Position display updates during playback
+5. Seek control changes position
+6. Preview updates with frames during playback
+7. GUI remains responsive
+8. Auto-stop at video end
+9. Load new video stops old playback
+10. PLAN 1-4 functionality still works
+11. plan/plan5require.txt exists
+12. plan/plan5result.txt exists with accurate log

@@ -1,0 +1,128 @@
+PLAN 7 REQUIREMENTS
+
+Plan Number: 7
+Plan Name: Subtitle Blocks on Timeline
+
+Goal: Add visual subtitle blocks to the existing Canvas-based Timeline.
+
+The Timeline should display subtitle blocks representing each subtitle's actual start_ms and end_ms from the existing Subtitle model.
+
+Scope:
+- Subtitle blocks on Canvas timeline
+- Click to select subtitle blocks
+- Treeview ↔ Timeline selection synchronization
+- Rebuild blocks on SRT load, video load, timeline resize
+- Selection handling (click block ↔ select in Treeview)
+
+Explicitly NOT Implemented:
+- Dragging subtitle blocks
+- Resizing subtitle blocks
+- Changing subtitle start/end time
+- Editing subtitle text from Timeline
+- TTS, Piper, Voice generation
+- Audio waveform/editing
+- Final MP4 rendering
+- Project save/load
+- Multiple timeline tracks
+- Timeline zoom
+- Complex editing behavior
+
+Files to Modify/Create:
+1. app/ui.py - Add subtitle blocks to timeline Canvas
+2. tests/test_subtitle_timeline.py - Unit tests for subtitle block positioning
+3. plan/plan7require.txt - This file
+4. plan/plan7result.txt - Implementation result log
+
+Dependencies:
+- Python standard library only (tkinter)
+- No external dependencies
+
+Detailed Requirements:
+
+SUBTITLE BLOCK POSITIONING:
+- For each subtitle in state.subtitles:
+  - left_x = _time_to_x(subtitle.start_ms)
+  - right_x = _time_to_x(subtitle.end_ms)
+  - Draw rectangle from left_x to right_x
+- Use existing _time_to_x() method for coordinate mapping
+- Block height: ~28-32 pixels (compact, within timeline area)
+- Block vertical position: centered in available timeline space above markers
+
+SUBTITLE BLOCK TEXT:
+- Display subtitle text inside block when space allows
+- For long text: truncate visually with ellipsis
+- Keep full text in Subtitle model unchanged
+- Multi-line subtitles: display first line with " | " separator
+- Use Canvas create_text inside rectangle
+
+SUBTITLE BLOCK IDENTIFICATION:
+- Maintain mapping: Canvas item ID → subtitle index
+- Use Canvas tags: "subtitle_block", "subtitle_{index}"
+- Store references: self._subtitle_block_ids = {}  # index → (rect_id, text_id)
+
+SUBTITLE BLOCK REBUILD:
+- Rebuild when:
+  - SRT loaded (_check_srt_result)
+  - Video loaded (_check_video_result / _rebuild_timeline)
+  - Timeline resized (_on_timeline_resize)
+- Do NOT rebuild during playback
+- Only rebuild when data actually changes
+
+SUBTITLE BLOCK SELECTION:
+- Click on subtitle block → select that subtitle
+- Click on empty timeline → seek (existing behavior)
+- Bind click on subtitle block items
+- Distinguish between block click and empty area click
+
+SELECTION SYNCHRONIZATION:
+- Click subtitle block:
+  - Highlight block (change color/border)
+  - Select corresponding Treeview row
+  - Update state.selected_subtitle
+- Click Treeview row:
+  - Highlight corresponding Timeline block
+  - Update state.selected_subtitle
+- Use single selection state: state.selected_subtitle
+
+VISUAL SELECTION:
+- Normal block: light blue fill, gray outline
+- Selected block: darker blue fill, blue outline
+- Minimum visual width: 8 pixels (enforce for very short subtitles)
+- Out-of-range clamping: clamp block to visible timeline area
+
+SRT BEFORE VIDEO / VIDEO BEFORE SRT:
+- If SRT loaded first: store subtitles, rebuild blocks when video loads
+- If video loaded first: rebuild blocks when SRT loads
+- Both orders must work
+
+OVERLAP HANDLING:
+- If subtitles overlap in time, stagger vertically
+- Simple approach: alternate between two rows (top/bottom of available space)
+- Keep it simple, don't build full multi-track system
+
+THREAD SAFETY:
+- All Canvas updates on main thread
+- Rebuild via root.after if triggered from worker thread
+- Use existing queue + root.after pattern
+
+TESTING:
+1. Subtitle time-to-x conversion
+2. Block width calculation
+3. Minimum visual width enforcement
+4. Multiple subtitle positioning
+5. Out-of-range visual clamping
+6. Empty subtitle list handling
+7. Selection mapping
+8. Treeview ↔ Timeline selection sync
+
+Completion Criteria:
+1. Subtitle blocks appear on timeline at correct positions
+2. Blocks show subtitle text (truncated if needed)
+3. Click block selects subtitle in Treeview
+4. Click Treeview row highlights timeline block
+5. Blocks rebuild on SRT load, video load, resize
+6. Blocks don't rebuild during playback
+7. Playback continues working without flicker
+8. All PLAN 1-6 functionality still works
+9. plan/plan7require.txt exists
+10. plan/plan7result.txt exists with accurate log

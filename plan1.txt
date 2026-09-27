@@ -1,0 +1,50 @@
+Mình sẽ sửa các PLAN trước thành:
+
+```text
+PLAN 1
+Project skeleton
+
+PLAN 2
+Subtitle model + SRT
+
+PLAN 3
+SRT GUI
+
+PLAN 4
+Video loading
+
+PLAN 5
+Video playback
+
+PLAN 6
+Timeline
+
+PLAN 7
+Subtitle blocks
+
+PLAN 8
+Subtitle editing
+
+PLAN 9
+Piper voice discovery
+
+PLAN 10
+Piper preview
+
+PLAN 11
+Generate all voices
+
+PLAN 12
+FFmpeg audio composition
+
+PLAN 13
+Final MP4
+
+PLAN 14
+Project save/load
+
+PLAN 15
+Cleanup/error handling
+```
+
+**Không cần `edge-tts` nữa.**

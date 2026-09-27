@@ -1,0 +1,132 @@
+PLAN 6 REQUIREMENTS
+
+Plan Number: 6
+Plan Name: Basic Timeline and Playhead
+
+Goal: Implement the basic foundation of the application's Timeline.
+
+The Timeline must:
+1. Have a dedicated visible area.
+2. Represent the full video duration horizontally.
+3. Display a playhead.
+4. Move the playhead according to the current video position.
+5. Allow the user to click the timeline to seek.
+6. Stay synchronized with the existing playback system.
+7. Remain responsive during playback.
+
+Scope:
+- Timeline background area with Canvas
+- Time markers and labels
+- Playhead that moves during playback
+- Click-to-seek functionality
+- Playback synchronization (reuse existing playback state)
+- Seek Scale synchronization
+- Window resize handling
+- Thread-safe UI updates
+
+Explicitly NOT Implemented:
+- Subtitle blocks
+- Subtitle timing editing
+- Dragging subtitle blocks
+- Resizing subtitle blocks
+- Subtitle selection from timeline
+- Voice assignment
+- Piper
+- TTS
+- Audio waveform
+- Audio editing
+- Final MP4 rendering
+- Project save/load
+- Complex timeline editing
+- Multiple tracks
+- Zoom controls
+- Professional NLE features
+
+Files to Modify/Create:
+1. app/ui.py - Replace timeline placeholder with Canvas-based timeline
+2. tests/test_timeline.py - Unit tests for timeline coordinate mapping
+3. plan/plan6require.txt - This file
+4. plan/plan6result.txt - Implementation result log
+
+Dependencies:
+- Python standard library only (tkinter, math)
+- No external dependencies
+
+Detailed Requirements:
+
+TIMELINE ARCHITECTURE:
+- Use Tkinter Canvas for drawing
+- Draw static elements once: background, time markers, time labels
+- Create playhead as a single Canvas item, update position with coords()
+- Never redraw entire timeline during playback - only move playhead
+
+TIMELINE COORDINATE MAPPING:
+- time_to_x(time_ms): Convert milliseconds to Canvas x coordinate
+- x_to_time(x): Convert Canvas x coordinate to milliseconds
+- Clamp values: 0 <= time_ms <= duration_ms
+- Handle edge cases: duration = 0, width = 0
+
+TIME MARKERS:
+- Adaptive interval based on video duration
+- Short videos (< 60s): 1-second intervals
+- Medium videos (60-300s): 5-second intervals
+- Longer videos (300-1800s): 10-second intervals
+- Very long videos (> 1800s): 30-second or 60-second intervals
+- Draw as vertical lines with time labels below
+
+PLAYHEAD:
+- Vertical line with triangle marker at top
+- Created once, moved with canvas.coords()
+- Position synchronized with state.current_time_ms
+
+CLICK TO SEEK:
+- Bind <Button-1> on Canvas
+- Get x coordinate, convert to time
+- Reuse existing seek mechanism (_seek_to_position)
+- Update seek Scale and playhead
+- If playing: pause, seek, resume
+- If paused: seek, stay paused
+
+SYNCHRONIZATION:
+- Reuse existing state.current_time_ms
+- Reuse existing _check_playback_result() polling
+- Update playhead position when playback position updates
+- Update seek Scale when timeline clicked
+- Update timeline when Scale used
+
+VIDEO RELOAD:
+- Rebuild timeline when new video loaded
+- Clear old Canvas items, redraw markers for new duration
+- Reset playhead to 0
+
+NO VIDEO STATE:
+- Show empty timeline with "No video loaded" text
+- No playhead
+- No crash on divide by zero
+
+WINDOW RESIZE:
+- Bind <Configure> on Canvas
+- Redraw time markers on resize
+- Recalculate playhead position
+- Debounce if necessary
+
+TESTING:
+1. time_to_x conversion with various durations
+2. x_to_time conversion
+3. Clamping logic
+4. Marker interval calculation
+4. Zero duration handling
+5. Timeline width changes
+6. Manual GUI test with video
+
+Completion Criteria:
+1. Timeline Canvas replaces placeholder
+2. Time markers drawn correctly
+3. Playhead visible and moves during playback
+4. Click timeline seeks video
+5. Seek Scale and timeline synchronized
+6. Playback continues working
+7. GUI remains responsive
+8. All PLAN 1-5 functionality still works
+9. plan/plan6require.txt exists
+10. plan/plan6result.txt exists with accurate log

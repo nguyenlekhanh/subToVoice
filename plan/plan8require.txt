@@ -1,0 +1,156 @@
+PLAN 8 REQUIREMENTS
+
+Plan Number: 8
+Plan Name: Subtitle Selection, Editing, and Timing Drag
+
+Goal: Implement subtitle selection, text editing, timing editing, and drag-to-move subtitle blocks on the Timeline.
+
+Scope:
+- Subtitle selection synchronization between Treeview and Timeline
+- Subtitle text editing via Treeview double-click
+- Subtitle timing (start/end) editing via Treeview
+- Drag subtitle blocks on Timeline to adjust timing
+- Timeline clamping to prevent dragging outside video bounds
+- Keep playback synchronized
+- Keep Treeview and Timeline selection synchronized
+
+Explicitly NOT Implemented:
+- Piper TTS
+- Voice generation
+- Audio composition
+- Final MP4 rendering
+- Project save/load
+- Multiple timeline tracks
+- Timeline zoom
+- Complex editing behavior (resize handles, etc.)
+
+Files to Modify/Create:
+1. app/ui.py - Add subtitle editing, timing editing, drag functionality
+2. app/state.py - Add selected subtitle index tracking if needed
+3. models/subtitle.py - Ensure model supports editing
+4. services/srt_service.py - Ensure save_srt works with edited subtitles
+5. tests/test_subtitle_editing.py - Unit tests for editing logic
+6. plan/plan8require.txt - This file
+6. plan/plan8result.txt - Implementation result log
+
+Dependencies:
+- Python standard library only (tkinter)
+- No external dependencies
+
+Detailed Requirements:
+
+SUBTITLE SELECTION SYNCHRONIZATION:
+- Already implemented in PLAN 7: Treeview selection → Timeline block highlight
+- Already implemented in PLAN 7: Timeline block click → Treeview selection
+- Verify this works correctly
+- Ensure selection is preserved when rebuilding timeline
+
+SUBTITLE TEXT EDITING:
+- Double-click on Subtitle cell in Treeview to edit
+- In-place editing using Tkinter Entry widget
+- On Enter: save text, update model, update Treeview, update Timeline block
+- On Escape: cancel editing
+- Preserve multiline subtitle text (keep \n characters in model)
+- Treeview displays simplified version (first line with " | " separator)
+
+SUBTITLE TIMING EDITING:
+- Double-click on Start or End cell in Treeview to edit
+- In-place editing using Tkinter Entry widget
+- Time format: MM:SS.mmm (matching display format)
+- On Enter: validate, convert to ms, update model, update Treeview, update Timeline block
+- On Escape: cancel editing
+- Validation rules:
+  - start_ms >= 0
+  - end_ms > start_ms
+  - end_ms <= video_duration_ms (if video loaded)
+  - Show error message for invalid values
+
+TIMELINE SUBTITLE BLOCK DRAGGING:
+- Click and drag subtitle block on Timeline to move it
+- Dragging moves the entire block (preserves duration)
+- Update start_ms and end_ms by same delta
+- Visual feedback during drag (block follows mouse)
+- On mouse release: save new position, update model, update Treeview, update Timeline block
+- Clamping: prevent dragging outside video bounds
+  - start_ms >= 0
+  - end_ms <= video_duration_ms
+  - If drag would exceed bounds, clamp to bounds and preserve duration
+- Don't let drag trigger Timeline seek (already handled by existing click handling)
+
+TREEVIEW EDITING INTERACTION:
+- Double-click on editable cells (Subtitle, Start, End) to edit
+- Use Tkinter Entry widget for in-place editing
+- Click outside or Enter to save, Escape to cancel
+- Only one cell editable at a time
+
+TIMELINE DRAG INTERACTION:
+- Mouse press on subtitle block: start drag
+- Mouse motion: move block visually (update Canvas coords)
+- Mouse release: commit new position, update model, Treeview, Timeline
+- During drag: block follows mouse horizontally
+- Prevent vertical movement
+- Clamp to video bounds during drag
+- On release: update model, Treeview, Timeline
+- Don't rebuild entire timeline during drag - just move the block
+
+VALIDATION:
+- start_ms >= 0
+- end_ms > start_ms
+- end_ms <= video_duration_ms (if video loaded)
+- Show error message for invalid values, revert to previous values
+
+TREEVIEW ↔ TIMELINE SELECTION SYNC:
+- Already implemented in PLAN 7
+- Ensure it works with new editing features
+- When text/timing edited, keep subtitle selected
+- When subtitle dragged on Timeline, update Treeview selection
+
+TREEVIEW EDITING DETAILS:
+- Double-click on Subtitle cell → edit text
+- Double-click on Start cell → edit start time (MM:SS.mmm format)
+- Double-click on End cell → edit end time (MM:SS.mmm format)
+- Voice column not editable (for future use)
+- Index column not editable
+
+VALIDATION ERROR HANDLING:
+- Show error message in status bar
+- Revert to previous valid values
+- Don't crash application
+
+TIMELINE DRAG CLAMPING:
+- During drag, if block would go beyond video start (0), clamp to 0
+- During drag, if block would go beyond video end, clamp to video_duration_ms
+- Preserve subtitle duration during clamping
+
+PLAYBACK SYNCHRONIZATION:
+- Don't rebuild entire Timeline during playback
+- Only update the dragged/edited block
+- Playhead continues moving independently
+- Don't interfere with existing _check_playback_result polling
+
+TREEVIEW EDITING UI:
+- Use Treeview's built-in cell editing or custom Entry widget
+- Double-click to start editing
+- Enter to save, Escape to cancel
+- Click outside to save (focus out)
+
+TESTING:
+1. Subtitle text editing
+2. Subtitle timing editing
+3. Timeline drag positioning
+4. Validation and clamping
+5. Treeview ↔ Timeline sync
+5. Manual tests with video and SRT
+6. Automated tests for validation logic
+
+Completion Criteria:
+1. Subtitle text editing via Treeview works
+2. Subtitle timing editing via Treeview works
+3. Timeline drag moves subtitle block
+3. Drag clamping works at video boundaries
+4. Treeview and Timeline stay synchronized
+5. Validation errors show clear messages
+6. Playback still works
+7. All PLAN 1-7 functionality still works
+8. plan/plan8require.txt exists
+9. plan/plan8result.txt exists with accurate log
