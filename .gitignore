@@ -5,5 +5,11 @@ dist
 npm-debug.log*
 yarn-error.log*
 
+.output
+.temp
+
+.\output
+.\temp
+
 ./output
-./temps
+./temp
