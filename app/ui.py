@@ -3,15 +3,17 @@ Video Voice Editor - Main GUI Application
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import hashlib
 import threading
 import queue
 import time
 import tempfile
 import uuid
+import wave
 from pathlib import Path
 
 from app.state import AppState
-from services.piper_service import PiperService
+from services.piper_service import PiperService, VoicePreviewResult, wav_info
 from services.srt_service import SRTService, SRTParseError
 from services.video_service import VideoService, VideoLoadError
 
@@ -27,6 +29,12 @@ class VideoVoiceEditorApp:
         self._piper_load_thread = None
         self._piper_result_queue = queue.Queue()
         self._piper_voices = []
+        # PLAN 10 voice preview state (worker/queue/root.after pattern)
+        self._preview_thread = None
+        self._preview_result_queue = queue.Queue()
+        self._preview_generating = False
+        self._preview_request_id = None
+        self.btn_preview_voice = None
         self._srt_load_thread = None
         self._srt_result_queue = queue.Queue()
         self._batch_insert_index = 0
@@ -931,6 +939,12 @@ class VideoVoiceEditorApp:
         )
         self.voice_combo.pack(fill=tk.X, padx=10, pady=5)
         self.voice_combo.bind("<<ComboboxSelected>>", self._on_voice_selected)
+        self.btn_preview_voice = ttk.Button(
+            frame,
+            text="Preview Voice",
+            command=self._on_preview_voice,
+        )
+        self.btn_preview_voice.pack(fill=tk.X, padx=10, pady=(0, 5))
         self._start_piper_discovery()
 
     def _start_piper_discovery(self):
@@ -968,6 +982,7 @@ class VideoVoiceEditorApp:
             self.voice_combo.config(state=tk.DISABLED, values=())
             self.voice_var.set("No Piper voices found")
             self._update_status(f"Piper voice discovery failed: {payload}")
+            self._update_preview_button_state()
             return
 
         self._piper_voices = list(payload)
@@ -976,6 +991,7 @@ class VideoVoiceEditorApp:
             self.voice_combo.config(state=tk.DISABLED, values=())
             self.voice_var.set("No Piper voices found")
             self._update_status("No Piper voices found")
+            self._update_preview_button_state()
             return
 
         names = [voice.name for voice in self._piper_voices]
@@ -987,12 +1003,241 @@ class VideoVoiceEditorApp:
         self.voice_combo.current(0)
         self.state.selected_voice = self._piper_voices[0]
         self._update_status(f"Discovered {len(self._piper_voices)} Piper voices")
+        self._update_preview_button_state()
 
     def _on_voice_selected(self, event=None):
         """Store the user-selected Piper voice object."""
         index = self.voice_combo.current()
         if 0 <= index < len(self._piper_voices):
             self.state.selected_voice = self._piper_voices[index]
+        self._update_preview_button_state()
+
+    @staticmethod
+    def _clean_preview_text(raw_text: str) -> str:
+        """Remove hidden control characters that TTS must never receive.
+
+        Drops U+FEFF, normalizes \\r\\n/\\r to \\n, strips boundary blank
+        lines/whitespace. Interior accents, punctuation, multiline breaks and
+        meaningful spaces stay byte-identical.
+        """
+        text = raw_text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+        return text.strip(" \t\n")
+
+    def _get_selected_subtitle_for_preview(self):
+        """Single source of truth: CURRENT Treeview item -> live model subtitle.
+
+        Returns (subtitle_index, raw_subtitle_text, voice, error_message).
+        No cached/stale/fallback subtitle, voice, or text -- ever.
+        """
+        selection = self.subtitle_tree.selection()
+        if not selection:
+            return None, "", None, "Please select a subtitle first."
+        values = self.subtitle_tree.item(selection[0], "values")
+        if not values:
+            return None, "", None, "Invalid subtitle selection."
+        try:
+            subtitle_index = int(values[0])
+        except (TypeError, ValueError):
+            return None, "", None, "Invalid subtitle selection."
+        subtitle = None
+        for sub in self.state.subtitles:
+            if sub.index == subtitle_index:
+                subtitle = sub
+                break
+        if subtitle is None:
+            return None, "", None, f"Selected subtitle #{subtitle_index} no longer exists."
+        raw_text = subtitle.text if isinstance(subtitle.text, str) else ""
+        voice = self.state.selected_voice
+        if voice is None:
+            return None, "", None, "Please select a Piper voice first."
+        return subtitle_index, raw_text, voice, ""
+
+    def _update_preview_button_state(self):
+        """Enable Preview Voice only when a subtitle+voice are ready."""
+        if self.btn_preview_voice is None:
+            return
+        if self._preview_generating:
+            self.btn_preview_voice.config(state=tk.DISABLED, text="Generating...")
+            return
+        ready = bool(self.subtitle_tree.selection()) and self.state.selected_voice is not None
+        self.btn_preview_voice.config(
+            state=tk.NORMAL if ready else tk.DISABLED, text="Preview Voice"
+        )
+
+    @staticmethod
+    def _wav_fingerprint(wav_path):
+        """Short size/hash/duration fingerprint of a WAV file (read-only)."""
+        try:
+            data = Path(wav_path).read_bytes()
+        except OSError:
+            return "unreadable"
+        digest = hashlib.sha256(data).hexdigest()[:16]
+        try:
+            with wave.open(str(wav_path), "rb") as wav:
+                frames = wav.getnframes()
+                rate = wav.getframerate()
+                duration = f"{frames / rate:.2f}s" if rate else "unknown"
+        except Exception:
+            duration = "unknown"
+        return f"size={len(data)} sha256={digest} duration={duration}"
+
+    def _on_preview_voice(self):
+        """Capture selection -> request -> worker. Treeview never queried again."""
+        if self._preview_generating:
+            return
+
+        subtitle_index, raw_text, voice, error = self._get_selected_subtitle_for_preview()
+        if error:
+            self._update_status(error)
+            messagebox.showinfo("Preview Voice", error)
+            self._update_preview_button_state()
+            return
+
+        subtitle_text = self._clean_preview_text(raw_text)
+        if not subtitle_text:
+            self._update_status("Subtitle text is empty.")
+            messagebox.showinfo("Preview Voice", "Subtitle text is empty.")
+            return
+
+        request_id = uuid.uuid4().hex[:8]
+        self._preview_request_id = request_id
+        print("[VOICE PREVIEW]")
+        print(f"request_id={request_id}")
+        print(f"subtitle_index={subtitle_index}")
+        print(f"voice={voice.name}")
+        print(f"text={subtitle_text!r}")
+
+        self._preview_generating = True
+        self._update_preview_button_state()
+        self._update_status("Generating voice preview...")
+
+        self._preview_thread = threading.Thread(
+            target=self._preview_worker,
+            args=(request_id, subtitle_index, subtitle_text, voice),
+            daemon=True,
+        )
+        self._preview_thread.start()
+        self.root.after(100, lambda _rid=request_id: self._check_preview_result(_rid))
+
+    def _preview_output_path(self, request_id: str):
+        """Fresh unique WAV under temp/preview/; never reuse an existing file."""
+        project_root = Path(__file__).resolve().parent.parent
+        preview_dir = project_root / "temp" / "preview"
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        output_path = preview_dir / f"{request_id}.wav"
+        while output_path.exists():
+            output_path = preview_dir / f"{uuid.uuid4().hex[:8]}.wav"
+        return output_path
+
+    def _preview_worker(self, request_id: str, subtitle_index: int, subtitle_text: str, voice):
+        """Synthesize ONLY the captured text; never touches Tkinter/Treeview."""
+        try:
+            output_path = self._preview_output_path(request_id)
+            result_path = self.piper_service.synthesize(
+                subtitle_text, voice, output_path, request_id=request_id
+            )
+            info = wav_info(str(result_path))
+            print("[VOICE PREVIEW]")
+            print(f"generated_wav={result_path}")
+            print(f"exists={Path(result_path).is_file()}")
+            print(f"size={info['size']} duration={info['duration_s']}s sha256={info['sha256']}")
+            self._preview_result_queue.put(VoicePreviewResult(
+                request_id=request_id,
+                subtitle_index=subtitle_index,
+                subtitle_text=subtitle_text,
+                voice_name=voice.name,
+                output_wav=str(result_path),
+                success=True,
+                wav_size=info["size"],
+                wav_sha256=info["sha256"],
+                wav_duration_s=info["duration_s"],
+            ))
+        except Exception as exc:
+            self._preview_result_queue.put(VoicePreviewResult(
+                request_id=request_id,
+                subtitle_index=subtitle_index,
+                subtitle_text=subtitle_text,
+                voice_name=getattr(voice, "name", ""),
+                output_wav="",
+                success=False,
+                error=str(exc),
+            ))
+
+    def _check_preview_result(self, request_id=None):
+        """Consume one preview result on the Tkinter main thread."""
+        try:
+            result = self._preview_result_queue.get_nowait()
+        except queue.Empty:
+            if self._preview_generating:
+                self.root.after(100, lambda _rid=request_id: self._check_preview_result(_rid))
+            return
+
+        if request_id is not None and result.request_id != request_id:
+            self._preview_result_queue.put(result)
+            if self._preview_generating:
+                self.root.after(100, lambda _rid=request_id: self._check_preview_result(_rid))
+            return
+
+        self._preview_generating = False
+        self._update_preview_button_state()
+
+        if not result.success:
+            self._update_status(f"Voice preview failed: {result.error}")
+            messagebox.showerror("Preview Voice", f"Voice preview failed:\n{result.error}")
+            return
+
+        print("[VOICE PREVIEW]")
+        print(f"playing_wav={result.output_wav}")
+        print(f"playing_request_id={result.request_id}")
+        print(f"playing_voice={result.voice_name}")
+        try:
+            before_play = wav_info(result.output_wav)
+            match = (before_play["size"] == result.wav_size
+                     and before_play["sha256"] == result.wav_sha256)
+        except Exception as exc:
+            before_play = {"size": 0, "sha256": "", "duration_s": 0.0}
+            match = False
+            print(f"[VOICE PREVIEW] before_play_unreadable={exc}")
+        print(f"before_play_size={before_play['size']} "
+              f"before_play_duration={before_play['duration_s']}s "
+              f"before_play_sha256={before_play['sha256']}")
+        print(f"wav_match={match}")
+        if not match:
+            self._update_status("Warning: preview WAV changed after synthesis.")
+            messagebox.showwarning(
+                "Preview Voice",
+                "The preview WAV changed between synthesis and playback.",
+            )
+        self._update_status("Playing voice preview.")
+        self._play_preview_wav(result.output_wav)
+        self._update_preview_button_state()
+
+    def _play_preview_wav(self, wav_path: str):
+        """Play exactly the returned WAV file (non-blocking winsound)."""
+        abs_path = str(Path(wav_path).resolve())
+        if not Path(abs_path).is_file():
+            self._update_status(f"Preview WAV not found: {abs_path}")
+            messagebox.showerror("Preview Voice", f"Preview WAV not found:\n{abs_path}")
+            return
+        try:
+            import winsound
+        except ImportError:
+            self._update_status(f"Preview saved: {abs_path} (audio playback not supported)")
+            return
+
+        def _play():
+            try:
+                try:
+                    winsound.PlaySound(None, winsound.SND_PURGE)
+                except Exception:
+                    pass
+                winsound.PlaySound(abs_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            except Exception as exc:
+                self.root.after(
+                    0, lambda: self._update_status(f"Voice preview failed: {exc}")
+                )
+
+        threading.Thread(target=_play, daemon=True).start()
 
     def _create_status_bar(self, parent):
         """Create status bar at bottom"""
@@ -1692,6 +1937,7 @@ class VideoVoiceEditorApp:
                     self.state.selected_subtitle = sub
                     self._select_subtitle_by_index(sub.index)
                     break
+        self._update_preview_button_state()
 
     # === Treeview Cell Editing ===
     def _on_treeview_double_click(self, event):

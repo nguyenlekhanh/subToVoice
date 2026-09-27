@@ -1,0 +1,90 @@
+PLAN 10 RESULT (fresh implementation on the PLAN 9 baseline)
+
+1. Date
+2026-09-27
+
+2. Baseline confirmation
+- Before writing code, verified the project is the PLAN 9 baseline: PLAN 9
+  discovery (PiperService/PiperVoice, Combobox, background discovery) present;
+  project-wide grep found NO Preview Voice button, NO synthesize/preview/
+  request_id/winsound/VoicePreviewResult code (only unrelated VIDEO preview
+  area names); services/piper_service.py was discovery-only; tests/ had no
+  synthesis/preview tests; no plan10* files existed. Plan1-9 logs re-read.
+- No old PLAN 10 code was restored, copied, or patched.
+
+3. What was implemented
+- services/piper_service.py (discovery code untouched, additive only):
+  PiperSynthesisError; VoicePreviewResult (request_id, subtitle_index,
+  subtitle_text, voice_name, output_wav, success, error, wav_size, wav_sha256,
+  wav_duration_s); find_piper_executable / is_piper_module_available /
+  resolve_piper_base_command (exe on PATH, else `python -m piper`, else clear
+  error -- no guessed paths); espeak_voice_from_config / resolve_espeak_voice
+  (each model uses its OWN .onnx.json: vi stays vi, en-us stays en-us);
+  synthesize(text, voice, output_wav, ...) -- validates text/voice/model/config,
+  creates parent dirs, one subprocess with single stdin UTF-8 handoff
+  (input=bytes => stdin PIPE + EOF, stdout/stderr piped), returncode check,
+  WAV exists/non-empty verification; full-repr + byte-count + exact-command
+  logs, [PIPER OUTPUT] block; wav_info() read-only header/hash inspector.
+- app/ui.py (PLAN 1-9 logic untouched; additive preview block + 4 one-line
+  button-state refresh calls in existing selection/discovery handlers):
+  "Preview Voice" button in the Piper Voice area; _clean_preview_text (drops
+  U+FEFF, CR normalization, boundary blank-line strip; interior byte-identical);
+  _get_selected_subtitle_for_preview (Treeview item -> int(values[0]) -> live
+  state.subtitles object -> (index, raw text, voice, error); no cache/fallback);
+  _update_preview_button_state (disabled while generating or when no
+  subtitle/voice selected); _on_preview_voice (captures values once, full-repr
+  log, worker thread, root.after poll); _preview_output_path
+  (temp/preview/<request_id>.wav + collision regeneration); _preview_worker
+  (captured args only, fingerprints into the result object); _check_preview_result
+  (stale-id requeue, wav_match comparison with loud warning, plays exactly
+  result.output_wav); _play_preview_wav (absolute-path + exists guard, lazy
+  winsound, SND_FILENAME|SND_ASYNC, purge-before only, daemon thread).
+  Statuses: "Generating voice preview...", "Playing voice preview.",
+  "Voice preview failed: ...".
+- tests/test_piper_service.py (discovery tests kept): validation (empty text,
+  missing model/config, invalid voice, missing runtime, failing process);
+  per-model eSpeak resolution; exact-text stdin tests incl. Text A vs Text B
+  differentiation, A/B/C distinctness, multiline preservation, different
+  voices -> different --model/--config argv; wav_info header/tamper tests;
+  VoicePreviewResult contract tests. Fake runtime writes valid WAVs, so no
+  real Piper is needed.
+- plan/plan10require.txt + plan/plan10result.txt (this file): created.
+
+4. Piper runtime actually used
+- Code resolves `piper` on PATH, else `python -m piper`; the user's real
+  environment previously used C:\khanh\python\30_1 subTheoVoice\.venv\Scripts\
+  piper.EXE. No path is guessed or hardcoded; missing runtime raises a clear
+  PiperSynthesisError. Runtime version could not be captured here (blocked).
+
+5. Synthesis implementation / exact input handling
+- Command: <runtime> --model <abs .onnx> --config <abs .onnx.json>
+  --espeak-voice <own JSON value> --output_file <temp/preview/<id>.wav>
+  (+ --speaker only for multi-speaker models). Single stdin UTF-8 handoff,
+  exactly once; no argv text in production; text never re-read from GUI/state.
+
+6. Preview playback implementation
+- As in section 3: exact returned path, absolute-path + exists guard,
+  winsound SND_FILENAME|SND_ASYNC, purge-before only, no timers, no
+  delete-while-playing, stale-result guard + single-flight button.
+
+7. Tests actually executed
+- NONE. `python -m py_compile services/piper_service.py`: blocked
+  (spawn EFTYPE). `python -m py_compile app/ui.py`: blocked (spawn EFTYPE).
+  `python -m py_compile tests/test_piper_service.py`: blocked (spawn EFTYPE).
+  `python -m unittest`, `python main.py`, real-Piper synthesis: not attempted
+  (same blocked execution path). New tests are written but UNRUN here.
+
+8. Manual tests performed
+- None by agent (environment blocks all execution). For the user: Subtitle A
+  ('AAAAAAA đây là câu kiểm tra số một.') vs B ('BBBBBBB đây là câu kiểm tra
+  số hai.') with voice 1, A with voice 2; verify per-request logs (text repr,
+  voice, model, generated==played path+hash), correct speech, voice change,
+  no preamble speech, unique WAVs.
+
+9. Failures / environment limitations
+- All Python/shell execution via the tool returns `spawn EFTYPE` with no
+  output; therefore no compile, import, unit-test, GUI, synthesis, or
+  listening verification was possible. No success is claimed.
+
+10. Not verified
+- Real WAV generation, pronunciation correctness, audio playback, GUI behavior.

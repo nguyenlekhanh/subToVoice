@@ -1,0 +1,59 @@
+PLAN 10 REQUIREMENTS (fresh implementation on the PLAN 9 baseline)
+
+Plan Number: 10
+Plan Name: Piper TTS Voice Preview
+
+Baseline: PLAN 9 (voice discovery + Combobox) is the ONLY foundation. No prior
+PLAN 10 code exists in the project; this plan is implemented from scratch.
+
+Goal: SELECT SUBTITLE + SELECT PIPER VOICE + PREVIEW VOICE. Clicking "Preview
+Voice" generates a temporary WAV for EXACTLY the selected subtitle text with
+EXACTLY the selected Piper model and plays EXACTLY that WAV.
+
+Scope:
+- Piper synthesis service: synthesize(text, voice, output_wav) in
+  services/piper_service.py. Exact captured text, actual selected PiperVoice
+  (real .onnx + .onnx.json from config/piper/ or config/piper-en/), unique WAV
+  path with parent creation, safe subprocess with explicitly controlled stdin
+  (UTF-8, exactly one input), wait + returncode check + WAV exists/non-empty
+  verification, clear errors. Per-model eSpeak voice read from the model's own
+  .onnx.json (Vietnamese -> its own config, never forced globally/English).
+  No Edge/cloud/other TTS engines. Discovery untouched.
+- Temp WAVs: temp/preview/<request_id>.wav, unique per click, never fixed
+  names, never overwritten, never deleted before playback finishes.
+- Selection: current Treeview item -> subtitle index -> live model object;
+  capture (index, exact text, voice) BEFORE the worker starts; worker never
+  touches the Treeview, never re-resolves, never uses globals/caches.
+  Multiline newlines preserved; Vietnamese Unicode exact.
+- Threading: worker thread -> queue.Queue -> root.after() -> UI callback;
+  Tkinter only on the main thread; no GUI freeze.
+- Playback: Windows winsound with filename flags on the EXACT returned WAV
+  path; no reconstruction, no old/fixed paths, no immediate stop, no
+  delete/replace while playing, no second command after starting.
+- Button "Preview Voice" near the voice controls: disabled when no subtitle
+  or no voice is selected, disabled while generating, re-enabled after
+  success/failure; statuses "Generating voice preview...", "Playing voice
+  preview.", "Voice preview failed: ...".
+- Logging per request (full repr(), never preview-only): request_id, subtitle
+  index, exact text, voice name, model path, config path, output path; before
+  Piper: exact text repr + length + exact command; after: returncode, exists,
+  size; before playback: request_id, path, exists, size (+ hash/duration).
+- Request IDs: unique per click, carried in the worker result (request_id,
+  subtitle_index, subtitle_text, voice_name, output_wav, success, error +
+  WAV fingerprint); stale results ignored when a newer request started.
+- Errors (status bar, no crash, no silent fallbacks): no/invalid subtitle, no
+  voice, missing exe/model/config, subprocess failure, nonzero exit, missing/
+  empty WAV, playback failure.
+- Tests: unique output naming, exact/unchanged text (incl. multiline), Text A
+  ('Mẹ ơi, ba ơi, cho con đi chơi với các bạn nha?') vs Text B ('Xin chào, đây
+  là một câu kiểm tra khác.') differentiation, different voices -> different
+  models, missing model/config/runtime/failing-process handling, WAV header/
+  hash inspection, result-object contract. Manual A/B + voice-switch checks.
+- Logs: plan/plan10require.txt (this file), plan/plan10result.txt (honest
+  record only; never claim unexecuted passes; record spawn EFTYPE as-is).
+
+Explicitly NOT in scope: batch/all-subtitle TTS, MP4 rendering, audio
+timeline, voice assignment automation, voice switching, A/V sync, waveform,
+audio export/mixing, PLAN 11. Unrelated services and PLAN 1-9 features
+(video playback/timeline/editing/SRT/discovery/combobox) must not change
+beyond additive preview hooks. STOP after PLAN 10.
