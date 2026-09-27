@@ -56,7 +56,22 @@ class PiperService:
         )
         return discover_voices(config_root, self._voice_directories)
 
-    def synthesize(
+def normalize_piper_input(text: str) -> str:
+    """Collapse one subtitle into a single Piper stdin line (no trailing newline).
+
+    Internal subtitle newlines become single spaces so one subtitle is one
+    Piper input record instead of several utterances. Words, punctuation, and
+    UTF-8 Vietnamese characters are preserved untouched; only line-boundary
+    whitespace, carriage returns, and BOM marks are normalized away.
+    """
+    if not isinstance(text, str):
+        raise PiperSynthesisError("Piper input must be a string.")
+    cleaned = text.replace("\r\n", "\n").replace("\r", "\n").replace("\ufeff", "")
+    lines = [line.strip(" \t") for line in cleaned.split("\n")]
+    return " ".join(line for line in lines if line)
+
+
+def synthesize(
         self,
         text: str,
         voice: PiperVoice,
@@ -299,14 +314,18 @@ def synthesize(
     espeak_voice: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> Path:
-    """Synthesize the exact given text to a WAV file with the given voice.
+    """Synthesize the exact given subtitle text to a WAV file with the given voice.
 
-    The text is delivered to Piper EXACTLY ONCE as UTF-8 bytes on stdin
-    (stdin=PIPE + communicate + EOF via ``input=``); console/stdin is never
-    inherited. Multiline text is preserved as-is. Raises PiperSynthesisError
-    on any validation, runtime, or generation failure.
+    The subtitle is normalized to ONE Piper input line (internal newlines
+    become spaces) and delivered EXACTLY ONCE as UTF-8 bytes on stdin with a
+    single terminating newline (stdin=PIPE + communicate + EOF via ``input=``);
+    console/stdin is never inherited. Raises PiperSynthesisError on any
+    validation, runtime, or generation failure.
     """
-    if not isinstance(text, str) or not text.strip():
+    if not isinstance(text, str):
+        raise PiperSynthesisError("Cannot synthesize empty text.")
+    normalized = normalize_piper_input(text)
+    if not normalized.strip():
         raise PiperSynthesisError("Cannot synthesize empty text.")
     if not isinstance(voice, PiperVoice):
         raise PiperSynthesisError("Invalid voice: a discovered PiperVoice is required.")
@@ -333,14 +352,18 @@ def synthesize(
     if resolved_speaker is None and (voice.num_speakers or 0) > 1:
         resolved_speaker = 0
 
-    stdin_payload = text.encode("utf-8")
+    stdin_payload = (normalized + "\n").encode("utf-8")
     print("[PIPER]")
     print(f"request_id={request_id}")
     print(f"voice={voice.name} model={model_path}")
     print(f"config={config_path} espeak_voice={resolved_espeak_voice!r}")
     print(f"output_wav={output_path}")
-    print(f"text={text!r}")
-    print(f"text_len={len(text)} stdin_bytes={len(stdin_payload)}")
+    print(f"text={normalized!r}")
+    print("[PIPER INPUT]")
+    print(f"text_original={text!r}")
+    print(f"text_normalized={normalized!r}")
+    print(f"text_len={len(normalized)} stdin_bytes={len(stdin_payload)}")
+    print(f"stdin_ends_with_newline={stdin_payload.endswith(chr(10).encode())}")
 
     cmd = list(base_cmd) + ["--model", str(model_path)]
     cmd += ["--config", str(config_path)]

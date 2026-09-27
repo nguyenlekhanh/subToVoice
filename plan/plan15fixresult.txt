@@ -1,0 +1,68 @@
+PLAN 15 FIX RESULT (Piper stdin/newline only)
+
+1. Hypothesis verification
+- `python -m piper --help` could NOT be executed: every shell command in
+  this environment returns `spawn EFTYPE` with no output. No CLI help output
+  was observed; nothing about the installed Piper was assumed from it.
+- Evidence supporting the fix without a help run: (a) app logs prove the
+  correct text reaches the service yet durations are wrong and non-monotonic
+  with length (46 chars -> 0.639s vs 22 chars -> 1.103s); (b) before this
+  fix the app sent raw subtitle text with NO trailing newline and internal
+  newlines intact, while every working manual invocation (shell echo pipe)
+  terminates stdin with a newline; (c) Piper CLI consumes stdin line by
+  line (one line = one utterance), so unterminated/multiline input explains
+  cut-short audio with returncode=0. The change is confined to input
+  preparation; command, model, config, and flags are untouched.
+
+2. Files changed
+- services/piper_service.py ONLY (plus tests + these logs).
+  - New normalize_piper_input(): CRLF/CR/BOM normalization, per-line
+    " \t" boundary strip, empty-line drop, single-space join; words,
+    punctuation, and UTF-8 Vietnamese preserved; non-string raises
+    PiperSynthesisError.
+  - synthesize(): validates str, normalizes, keeps the existing empty-text
+    error for empty/whitespace-only input; stdin payload is exactly
+    (normalized + one "\n") UTF-8 encoded, sent once via input=;
+    logs text_original/text_normalized reprs, text_len, stdin_bytes,
+    stdin_ends_with_newline. Applies to Preview Voice and Generate All
+    Voices (both route through synthesize()).
+- tests/test_piper_service.py: new PiperInputNormalizationTest (normal
+  Vietnamese unchanged; multiline joined; per-codepoint Unicode intact;
+  exactly-one trailing newline incl. log flag; empty/whitespace rejection
+  incl. normalize(None); CRLF/BOM case); updated 4 existing stdin-byte
+  assertions (incl. the batch stdin.log case) to the normalized + newline
+  expectation.
+- plan/plan15fixrequire.txt + plan/plan15fixresult.txt (this file).
+
+3. Input normalization / multiline / UTF-8 / newline handling
+- "Mẹ ơi,\nba ơi,\ncho con đi chơi." -> "Mẹ ơi, ba ơi, cho con đi chơi.".
+- No errors="ignore"/"replace", no ASCII conversion, no spelling/word
+  changes; only line-boundary " \t" stripped.
+- Payload always ends with exactly one newline; never multiple.
+- WAV validation (exists, size, header, duration, hash, batch handling)
+  completely unchanged.
+
+4. Tests executed / results
+- NONE executed. `python -m py_compile services/piper_service.py` and
+  `python -m py_compile tests/test_piper_service.py`: blocked, each returned
+  `spawn EFTYPE`. No unit test, fake-exe test, manual app test, or listening
+  check ran here. Static checks only: single helper definition, single use
+  site in synthesize(), read-back of all edited regions, updated assertions
+  verified consistent by search.
+
+5. Manual testing performed
+- None (blocked environment). Required user-side procedure: load the real
+  SRT, run Generate All Voices with banmai, listen to the "Mẹ ơi..." WAV
+  (expect full sentence, reasonable multi-second duration), test a multiline
+  subtitle, repeat with ngochuyen, confirm Compose Audio still works, and
+  check the new text_original/text_normalized/stdin_ends_with_newline log
+  lines.
+
+6. Runtime limitations / failures
+- All shell/Python execution in this environment returns `spawn EFTYPE`;
+  `python -m piper --help` output unavailable. No failures observed in code
+  review; no unrelated code touched.
+
+7. Bug verified as fixed?
+- NO. Not claimed. returncode=0 alone is not evidence; verification needs
+  the manual listening + duration check above.

@@ -1,0 +1,54 @@
+PLAN 15 FIX REQUIREMENTS (Piper stdin/newline only)
+
+Problem: running Piper directly outside the app produces correct Vietnamese
+speech, but Generate All Voices inside the app produces incorrect or
+unusually short audio (e.g. a 46-character subtitle yielding ~0.64s while a
+22-character one yields ~1.10s), even though logs show the correct subtitle
+text reaching the service layer.
+
+Scope: ONLY Piper CLI stdin text preparation and newline handling in
+services/piper_service.py (used by both Preview Voice and Generate All
+Voices through synthesize()). Do NOT modify SRT parsing, Treeview,
+selection, timing, timeline, voice assignment, discovery, Compose Audio,
+FFmpeg, Final MP4, Save/Load, Cleanup, playback, UI layout, state
+architecture, batch mapping, filenames, request IDs, cancellation, or any
+Plan 1-14 functionality. No new dependencies.
+
+Hypothesis to verify: the installed Piper CLI consumes stdin line by line
+(one line = one utterance) and requires a terminating newline. The app sent
+raw subtitle text with no trailing newline and with internal newlines
+intact, while manual shell runs (echo ... | piper) always terminate input
+with a newline. Verify via `python -m piper --help` (or equivalent) where
+runnable; only change code if the evidence supports it. Record when execution
+is blocked instead of guessing.
+
+Normalization: one subtitle = one Piper input line. Internal newlines become
+single spaces ("Mẹ ơi,\nba ơi,\ncho con đi chơi." becomes
+"Mẹ ơi, ba ơi, cho con đi chơi."). Preserve wording, punctuation, UTF-8
+Vietnamese (no errors="ignore"/"replace", no ASCII conversion). Strip only
+line-boundary whitespace; no aggressive .strip() changing content. Final
+stdin payload is exactly normalized text plus ONE terminating newline (never
+multiple newlines).
+
+Logging: keep/extend Piper debug logs to show original text repr, normalized
+text repr, byte count, and final-newline presence (never preview-only text).
+WAV validation (exists, size, header, duration, hash, batch handling)
+unchanged.
+
+Tests: focused normalization tests (normal Vietnamese unchanged; multiline
+joined; Unicode intact incl. per-codepoint check; payload ends with exactly
+one newline; empty/whitespace still rejected with existing behavior; CRLF/BOM
+cases). Update existing stdin-byte assertions to the normalized expectation.
+Manual test (load SRT, banmai batch incl. the "Mẹ ơi..." subtitle, multiline
+case, ngochuyen voice, Compose regression check) where runnable.
+
+Verification rule: returncode=0 alone never counts as fixed. Verify
+normalized text, stdin termination, WAV creation, reasonable duration, and
+(audio-content match if listening is possible). Report blocked runtimes with
+their exact reason. Never claim an unrun test passed.
+
+Logs: plan/plan15fixrequire.txt (this file), plan/plan15fixresult.txt
+(files, logic, UTF-8/newline handling, tests run + results, manual testing,
+limitations, failures, whether the bug is verified fixed). STOP after the fix:
+no Cleanup/Error-handling work, no PLAN 16, no features, no refactoring, no
+FFmpeg/Compose/MP4/project/editing/timeline changes.

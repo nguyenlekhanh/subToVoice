@@ -19,6 +19,7 @@ from services.piper_service import (
     discover_voices,
     espeak_voice_from_config,
     generate_batch_voices,
+    normalize_piper_input,
     resolve_espeak_voice,
     resolve_piper_base_command,
     synthesize,
@@ -285,7 +286,10 @@ class PiperExactTextTest(unittest.TestCase):
                 tmp_path, TEXT_A, make_voice(tmp), request_id="reqA"
             )
             self.assertTrue(result.is_file())
-            self.assertEqual(recorded_stdin.read_bytes(), TEXT_A.encode("utf-8"))
+            self.assertEqual(
+                recorded_stdin.read_bytes(),
+                (normalize_piper_input(TEXT_A) + chr(10)).encode("utf-8"),
+            )
             self.assertIn(f"text={TEXT_A!r}", logs)
             self.assertIn("request_id=reqA", logs)
 
@@ -297,7 +301,10 @@ class PiperExactTextTest(unittest.TestCase):
             _, _, stdin_b, logs_b = run_fake_synthesis(
                 tmp_path, TEXT_B, voice, request_id="reqB"
             )
-            self.assertEqual(stdin_b.read_bytes(), TEXT_B.encode("utf-8"))
+            self.assertEqual(
+                stdin_b.read_bytes(),
+                (normalize_piper_input(TEXT_B) + chr(10)).encode("utf-8"),
+            )
             self.assertNotEqual(stdin_a.read_bytes(), stdin_b.read_bytes())
             self.assertIn(f"text={TEXT_B!r}", logs_b)
 
@@ -317,14 +324,17 @@ class PiperExactTextTest(unittest.TestCase):
                 self.assertIn(f"text={text!r}", logs)
             self.assertEqual(len(payloads), 3)
 
-    def test_multiline_text_preserved(self):
+    def test_multiline_text_becomes_one_input_line(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            text = "Dòng một\nDòng hai"
+            text = chr(10).join(["Dòng một", "Dòng hai"])
             _, _, recorded_stdin, _ = run_fake_synthesis(
                 tmp_path, text, make_voice(tmp)
             )
-            self.assertEqual(recorded_stdin.read_bytes(), text.encode("utf-8"))
+            self.assertEqual(
+                recorded_stdin.read_bytes(),
+                "Dòng một Dòng hai".encode("utf-8") + chr(10).encode("utf-8"),
+            )
 
     def test_different_voices_resolve_different_models(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -508,10 +518,19 @@ class GenerateBatchVoicesTest(unittest.TestCase):
             self.assertEqual(errors, {})
             self.assertEqual(set(success), {1, 2, 3})
             self.assertEqual(len({success[i] for i in success}), 3)
-            # Multiline newline preserved exactly in the recorded stdin.
+            # Multiline subtitle becomes one terminated Piper input line.
             logged = stdin_log.read_bytes()
-            self.assertIn("Dòng một\nDòng hai".encode("utf-8"), logged)
-            self.assertIn(TEXT_A.encode("utf-8"), logged)
+            joined = "Dòng một Dòng hai".encode("utf-8") + chr(10).encode("utf-8")
+            split_across_lines = (
+                "Dòng một".encode("utf-8")
+                + chr(10).encode("utf-8")
+                + "Dòng hai".encode("utf-8")
+            )
+            self.assertIn(joined, logged)
+            self.assertNotIn(split_across_lines, logged)
+            self.assertIn(
+                TEXT_A.encode("utf-8") + chr(10).encode("utf-8"), logged
+            )
             self.assertEqual(len(progress_calls), 3)
             self.assertEqual(progress_calls[0][:4], ("b3", 1, 3, 1))
             self.assertTrue(all(call[4] for call in progress_calls))
@@ -570,6 +589,57 @@ class BatchAppStateTest(unittest.TestCase):
         self.assertEqual(state.subtitle_audio_errors, {})
         self.assertIsNone(state.audio_voice_name)
         self.assertIsNone(state.audio_batch_id)
+
+
+class PiperInputNormalizationTest(unittest.TestCase):
+    def test_normal_vietnamese_subtitle_unchanged(self):
+        text = "Mẹ ơi, ba ơi, cho con đi chơi với các bạn nha?"
+        self.assertEqual(normalize_piper_input(text), text)
+
+    def test_multiline_subtitle_becomes_one_line(self):
+        text = chr(10).join(["Mẹ ơi,", "ba ơi,", "cho con đi chơi."])
+        self.assertEqual(
+            normalize_piper_input(text), "Mẹ ơi, ba ơi, cho con đi chơi."
+        )
+
+    def test_vietnamese_unicode_intact(self):
+        text = "Ừ, duyệt cho con luôn."
+        normalized = normalize_piper_input(text)
+        self.assertEqual(normalized, text)
+        self.assertEqual(
+            [hex(ord(char)) for char in normalized],
+            [hex(ord(char)) for char in text],
+        )
+
+    def test_stdin_payload_has_exactly_one_terminating_newline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, recorded_stdin, logs = run_fake_synthesis(
+                Path(tmp), "Ừ, duyệt cho con luôn.", make_voice(tmp)
+            )
+            payload = recorded_stdin.read_bytes()
+            self.assertTrue(payload.endswith(chr(10).encode("utf-8")))
+            self.assertFalse(
+                payload[:-1].endswith(chr(10).encode("utf-8"))
+            )
+            self.assertIn("stdin_ends_with_newline=True", logs)
+
+    def test_empty_and_whitespace_only_still_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            voice = make_voice(tmp)
+            for bad in ("", "   "):
+                with self.assertRaises(PiperSynthesisError):
+                    synthesize(bad, voice, Path(tmp) / "out.wav")
+            self.assertEqual(normalize_piper_input(""), "")
+            with self.assertRaises(PiperSynthesisError):
+                normalize_piper_input(None)
+
+    def test_windows_line_endings_and_bom_normalized(self):
+        text = (
+            chr(65279) + "Dòng một," + chr(13) + chr(10) + "dòng hai."
+        )
+        self.assertEqual(
+            normalize_piper_input(text), "Dòng một, dòng hai."
+        )
 
 
 if __name__ == "__main__":
