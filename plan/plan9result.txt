@@ -175,3 +175,34 @@ None.
 - Remaining issues:
   - Startup fix is code-inspection verified only, not runtime-verified.
   - Still needs `python main.py` manual check for no traceback and Piper Combobox population.
+
+15. PLAN 9 PLAYBACK FIX 1 - Play button not working
+- Actual root cause: `_check_playback_result()` only rescheduled itself with `root.after(30, ...)` when `state.is_playing` was True. At startup `__init__` calls `_check_playback_result()` once while `is_playing=False`, so polling stopped immediately and never restarted. `_start_playback()` / `_resume_playback()` start `_playback_worker()` but never schedule `_check_playback_result()`, so queued ("frame"/"ended"/"error") results were never consumed: position, preview, and Timeline playhead never updated.
+- Exact playback path inspected:
+  - toolbar `btn_play command=self._on_play` -> `_on_play()` -> `_start_playback()` / `_resume_playback()` -> `threading.Thread(target=_playback_worker, daemon=True)` -> `_playback_worker()` -> `video_service.extract_frame_at_timestamp()` -> `_playback_result_queue.put(...)` -> `root.after(...)` -> `_check_playback_result()` -> `_display_frame_in_preview()` / `_update_position_display()` / `_update_playhead_position()` -> `_on_playback_ended()`.
+  - Also inspected: `btn_pause command=self._on_pause`, `btn_stop command=self._on_stop`, `AppState is_playing/is_paused/current_time_ms/video_duration_ms`, `_playback_stop_event`, `_playback_result_queue`, `extract_frame_at_timestamp()` FFmpeg `-ss HH:MM:SS.mmm -i input -frames:v 1 -y output.png`, `PhotoImage` lifetime via `self._preview_image`.
+  - No duplicate definitions found: one definition each for `_on_play`, `_start_playback`, `_resume_playback`, `_pause_playback`, `_stop_playback`, `_playback_worker`, `_check_playback_result`, `_display_frame_in_preview`, `_on_playback_ended`; all inside `VideoVoiceEditorApp`; button `command` bindings correct; no `_play_video()` (actual name is `_on_play()`).
+  - `services/video_service.py` FFmpeg command/units look correct; not changed.
+- Files changed:
+  - `app/ui.py` only (`_check_playback_result` tail).
+  - `app/state.py`, `services/video_service.py`, `main.py`, Piper files unchanged.
+- Exact fix:
+  - Replaced conditional reschedule:
+    `if self.state.is_playing: self.root.after(30, self._check_playback_result)`
+    with unconditional `self.root.after(30, self._check_playback_result)`, so the queue is always polled (one `queue.Empty` check per 30ms when idle). This matches the always-polling intent, avoids missing worker results, and avoids duplicate loops from scheduling in every start path (including seek-resume).
+  - Preserved Play/Pause/Stop, position, seek Scale, Timeline playhead/click/seek, subtitle blocks/editing, SRT, Piper Voice UI. No synthesis/audio/TTS changes.
+- Diagnostic findings:
+  - Existing `[DEBUG]` prints (PLAN 7 FIX 2) left in place; no new logging added because cause was clear from code trace; no debug output removed.
+  - Plan logs read: `plan5require/result`, `plan6require/result`, `plan7result`, `plan8result`, `plan9result`.
+- Commands actually executed:
+  - `python -m py_compile app/ui.py`: blocked, `spawn EFTYPE`.
+  - `python -m py_compile app/state.py`: blocked, `spawn EFTYPE`.
+  - `python -m py_compile services/video_service.py`: blocked, `spawn EFTYPE`.
+  - `python -m py_compile main.py`: blocked, `spawn EFTYPE`.
+  - `python -c "import app.ui; print('UI import OK')"` and `python main.py` not attempted separately; same execution path already blocked.
+- Tests passed: none through automated execution.
+- Tests blocked or not performed: all compile/import/startup/manual GUI checks unexecuted due to `spawn EFTYPE`.
+- Manual GUI results: none performed by agent; user should test: load MP4 -> first frame -> Play moves position/preview/playhead -> Pause stops -> Play resumes -> Stop resets to 0 + first frame -> click-to-seek -> Play after seek, with and without SRT.
+- Remaining issues:
+  - Fix is code-inspection verified only, needs real `python main.py` manual verification.
+  - Note: `_check_video_result()` / `_check_srt_result()` also stop polling after first success; left untouched as out of scope since user reports video/SRT loading works.

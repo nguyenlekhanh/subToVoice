@@ -1452,9 +1452,10 @@ class VideoVoiceEditorApp:
         except queue.Empty:
             pass
 
-        # Continue polling
-        if self.state.is_playing:
-            self.root.after(30, self._check_playback_result)
+        # Keep polling always so Play worker results are never missed.
+        # (Previously polling stopped at startup because is_playing=False,
+        # so frames queued by _playback_worker were never consumed.)
+        self.root.after(30, self._check_playback_result)
 
     def _display_frame_in_preview(self, frame_path: str):
         """Display a frame in the video preview area (for playback)"""
