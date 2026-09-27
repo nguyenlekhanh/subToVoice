@@ -240,7 +240,7 @@ class VideoVoiceEditorApp:
         self._timeline_label_ids = []
 
         # Bind events
-        self.timeline_canvas.bind("<Button-1>", self._on_timeline_click)
+        self.timeline_canvas.bind("<ButtonPress-1>", self._on_timeline_click)
         self.timeline_canvas.bind("<Configure>", self._on_timeline_resize)
 
         # Draw initial empty timeline
@@ -766,6 +766,11 @@ class VideoVoiceEditorApp:
         # Redraw timeline markers
         self._draw_timeline()
         # Update playhead position
+        self._update_playhead_position()
+
+    def _rebuild_timeline(self):
+        """Rebuild the entire timeline - redraw markers and update playhead"""
+        self._draw_timeline()
         self._update_playhead_position()
 
     def _create_subtitle_area(self, parent):
@@ -1538,7 +1543,7 @@ class VideoVoiceEditorApp:
             return
         
         # Only allow editing of start, end, and text columns
-        col_name = self.subtitle_tree.column(column, "id")
+        col_name = self._get_col_name_from_column(column)
         if col_name not in ("start", "end", "text"):
             return
         
@@ -1592,6 +1597,13 @@ class VideoVoiceEditorApp:
         """Map column identifier to column name"""
         col_map = {"#1": "index", "#2": "start", "#3": "end", "#4": "text", "#5": "voice"}
         return col_map.get(column, "")
+
+    def _get_subtitle_duration(self, subtitle_index: int) -> int:
+        """Get the duration of a subtitle in milliseconds"""
+        for sub in self.state.subtitles:
+            if sub.index == subtitle_index:
+                return sub.end_ms - sub.start_ms
+        return 0
 
     def _on_treeview_enter(self, event=None):
         """Save Treeview cell edit"""
@@ -1753,8 +1765,12 @@ class VideoVoiceEditorApp:
         if subtitle.index not in self._subtitle_block_ids:
             return
         rect_id, text_id = self._subtitle_block_ids[subtitle.index]
-        display_text = self._truncate_subtitle_text(subtitle.text, 
-            self.timeline_canvas.coords(text_id)[2] - self.timeline_canvas.coords(text_id)[0] if self.timeline_canvas.coords(text_id) else 100)
+        rect_coords = self.timeline_canvas.coords(rect_id)
+        if rect_coords:
+            max_width_px = rect_coords[2] - rect_coords[0]
+        else:
+            max_width_px = 100
+        display_text = self._truncate_subtitle_text(subtitle.text, max_width_px)
         self.timeline_canvas.itemconfig(text_id, text=display_text)
 
     def _update_subtitle_block_position(self, subtitle):

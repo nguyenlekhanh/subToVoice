@@ -182,4 +182,48 @@ Not tested - requires manual execution:
   - `python -c "import app.ui; print('Import OK')"` → Import OK
   - `python main.py` → Application starts successfully, GUI window opens
 
-24. Notes for PLAN 9
+24. PLAN 8 FIX 4 - Full UI Integrity Audit & Critical Bug Fixes (2026-09-27)
+- Issues Found and Fixed:
+  1. **Missing method `_get_subtitle_duration`** - Called in `_on_timeline_mouse_press` (line 634) but not defined. Added new method:
+     ```python
+     def _get_subtitle_duration(self, subtitle_index: int) -> int:
+         """Get the duration of a subtitle in milliseconds"""
+         for sub in self.state.subtitles:
+             if sub.index == subtitle_index:
+                 return sub.end_ms - sub.start_ms
+         return 0
+     ```
+  2. **Bug in `_on_treeview_double_click`** (line 1541) - Column identification logic was broken. The code compared column identifier (e.g., "#2") against column names ("start", "end", "text"). Fixed to use `_get_col_name_from_column()` for proper conversion.
+  3. **Bug in `_update_subtitle_block_text`** (line 1763) - Used `coords(text_id)[2]` which fails for text items (only returns x, y). Fixed to use rectangle coordinates instead.
+  4. **Redundant canvas bindings removed** - Removed duplicate `<Button-1>` binding (kept `<ButtonPress-1>` for drag handlers)
+  5. **Added missing `_get_subtitle_duration` method** - Required for drag functionality
+
+- Verification:
+  - `python -m py_compile app/ui.py` → Syntax OK
+  - `python -m py_compile main.py` → Syntax OK
+  - `python -c "import app.ui; print('Import OK')"` → Import OK
+  - `python main.py` → Application starts successfully, GUI window opens
+
+24. PLAN 8 FIX 5 - Restore `_rebuild_timeline()` and Timeline Integrity (2026-09-27)
+- Error: `AttributeError: 'VideoVoiceEditorApp' object has no attribute '_rebuild_timeline'` at startup
+- Root cause: The `_rebuild_timeline()` method was completely missing from `app/ui.py`, but it was being called in 4 places:
+  1. `_check_video_result()` (line 945) - after video load
+  2. `_check_srt_result()` (line 1475) - after SRT load
+  3. `_save_treeview_edit()` (line 1699) - after subtitle text/timing edit
+  4. Implicitly expected by `_on_timeline_resize` and other methods
+- Root cause: During PLAN 8 edits, the `_rebuild_timeline()` method was accidentally removed/lost while other timeline methods were modified
+- Fix: Added missing `_rebuild_timeline(self)` method at line 771-768 in `app/ui.py`:
+  ```python
+  def _rebuild_timeline(self):
+      """Rebuild the entire timeline - redraw markers and update playhead"""
+      self._draw_timeline()
+      self._update_playhead_position()
+  ```
+- Fix location: Added after `_on_timeline_resize` (line 770) and before `_create_subtitle_area` (line 772)
+- Verification:
+  - `python -m py_compile app/ui.py` → Syntax OK
+  - `python -m py_compile main.py` → Syntax OK
+  - `python -c "import app.ui; print('Import OK')"` → Import OK
+  - `python main.py` → Application starts successfully, GUI window opens
+
+25. Notes for PLAN 9
