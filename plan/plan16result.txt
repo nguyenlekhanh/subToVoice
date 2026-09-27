@@ -1,0 +1,101 @@
+PLAN 16 RESULT (Per-Subtitle Voice Assignment)
+
+1. Date
+2026-09-27
+
+2. Status
+PARTIAL (code complete; no runtime verification possible here).
+
+3. Implementation summary
+- services/piper_service.py (additive, discovery/synthesis untouched):
+  resolve_voice_by_name() pure helper; generate_batch_voices() accepts
+  (index, text[, voice_name]) items plus optional voices_by_name map --
+  per-item names resolve to their own PiperVoice (unknown name records that
+  subtitle's error and continues; empty name falls back to the global voice
+  for backward compatibility; map absent preserves exact old behavior).
+  Per-item voice logged; espeak/model resolution unchanged per call.
+- app/ui.py (existing flows preserved, additive changes only):
+  - Voice column kept (no duplicate); rows show Subtitle.voice from the model.
+  - Voice area reframed as "Default Voice" (global selection = default for
+    new subtitles + synthesis fallback; never bulk-overwrites rows).
+  - Voice cell editing reuses the single edit slot: double-click opens a
+    readonly Combobox of discovered voices (bbox-placed like Entry);
+    <<ComboboxSelected>>/Enter commits, Escape cancels, FocusOut follows the
+    existing delayed-save pattern (second save no-ops on cleared slot).
+    Commit validates against discovery, writes model + single row cell,
+    logs [VOICE ASSIGN] index+voice, and reuses the shared footer
+    (per-subtitle invalidation, compose/export refresh, dirty flag).
+    Opening without changing keeps audio valid (no-change guard).
+    Timeline untouched (blocks carry no voice).
+  - SRT load assigns the default voice (selected, else first discovered) to
+    voice-empty rows before Treeview insert; warns when no voices exist.
+  - Preview resolves subtitle.voice first (_resolve_subtitle_voice), global
+    default only as a warned fallback, hard error when nothing usable; the
+    captured PiperVoice object flows to the worker unchanged; button
+    enablement follows resolvability.
+  - Batch captures (index, text, start, end, voice_name) immutably,
+    fail-fast validates every name against discovery (lists missing
+    subtitles, starts nothing), worker receives the captured name->object
+    map (later UI edits cannot leak in), done-branch sets audio_voice_name
+    to the single voice or None when mixed; partial-failure semantics kept.
+  - Project load fills voice-empty rows with the default (logged count) and
+    warns for saved voices that are no longer discovered, preserving their
+    model values verbatim; save path already stored per-row voices.
+- tests/test_per_subtitle_voice.py (new, no Tk/Piper): model storage,
+  2-/3-voice distinctness, isolated change, unicode/multiline preservation,
+  resolve helper (hit/blank/unknown/whitespace), batch multi-voice argv
+  order, unknown-voice isolation, empty-fallback, capture immutability
+  against later UI edits, no-voice rejection, state invalidation (mapping /
+  composed / final), project save/load round-trip incl. verbatim unknown
+  voice. Prior suites untouched.
+- plan/plan16require.txt + plan/plan16result.txt (this file): created.
+
+4. Files changed
+services/piper_service.py, app/ui.py, tests/test_per_subtitle_voice.py (new),
+plan/plan16require.txt, plan/plan16result.txt. No other files touched.
+
+5. Voice column / assignment / Preview / Batch / invalidation / projects
+As in sections 3-4: single Voice column from Subtitle.voice; Combobox edit
+with validation + [VOICE ASSIGN] logs; Preview and Batch capture per-row
+voices (request/batch IDs and stale guards unchanged); voice/text edits
+invalidate that row + composed + Final MP4 (timing edits still invalidate
+composed/Final only, no WAV regen); save/load round-trips per-row voices
+with unknown-name preservation + warnings.
+
+6. Tests actually executed
+- NONE. `python -m py_compile app/ui.py` / `services/piper_service.py`:
+  blocked (spawn EFTYPE). Unit suites, GUI, manual 31-step checklist: not
+  attempted (same blocked path). New tests written but UNRUN; existing tests
+  untouched, none weakened.
+
+7. Tests that failed
+- None observed (nothing could run). Static audit: one definition per new
+  method, shared edit-slot reuse verified by read-back, no duplicate Voice
+  column, no global-voice overwrite paths.
+
+8. Manual tests actually performed
+- None by agent. Procedure: 31-step checklist in plan16require §30
+  (assign banmai/ngochuyen/cuc, per-row previews, batch voice proof,
+  edit-invalidation, save/restart/load voice retention, cancel, stale-voice
+  behavior).
+
+9. Environment limitations
+- All Python/shell execution returns `spawn EFTYPE` with no output.
+
+10. FIX: voice Combobox edit never committed (batch logged defaults)
+- User report: Generate All Voices logged the default voice for every row.
+- Root cause: the voice Combobox reused the Entry editor's FocusOut path,
+  which schedules a save 100ms after focus loss. Opening the dropdown moves
+  focus to the dropdown listbox, so the pending save fired while the user
+  was still choosing and committed the ORIGINAL (default) value, destroying
+  the editor mid-selection. Programmatic <Down> auto-open made the race worse.
+- Exact files changed (app/ui.py only):
+  - _start_voice_edit: no auto-open; FocusOut now routes to
+    _on_voice_edit_focus_out (deferred 200ms cancel that only acts when a
+    voice edit is still pending) instead of the Entry delayed-save. Explicit
+    pick (<<ComboboxSelected>>) or Enter still commits; Escape abandons.
+    The Treeview cell is only written on commit, so abandoning loses nothing.
+    Added [VOICE ASSIGN] editing/current log on open.
+  - _on_generate_all_voices: logs every captured (index, voice) pair before
+    validation, proving what the batch actually saw.
+- service/UI capture/synthesis code needed no change (verified correct).

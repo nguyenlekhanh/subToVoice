@@ -422,6 +422,17 @@ def wav_info(wav_path: PathLike) -> dict:
     }
 
 
+def resolve_voice_by_name(voices, name: Optional[str]) -> Optional[PiperVoice]:
+    """Find a discovered voice by name; None when missing/blank/unknown."""
+    wanted = (name or "").strip()
+    if not wanted:
+        return None
+    for voice in voices or ():
+        if voice.name == wanted:
+            return voice
+    return None
+
+
 def batch_output_path(output_dir: PathLike, subtitle_index: int, batch_id: str) -> Path:
     """Unique WAV path for one subtitle in a batch (never a fixed filename)."""
     return Path(output_dir) / f"subtitle_{subtitle_index:04d}_{batch_id}.wav"
@@ -439,18 +450,23 @@ def generate_batch_voices(
     espeak_voice: Optional[str] = None,
     cancel_event=None,
     progress_callback=None,
+    voices_by_name: Optional[Mapping[str, PiperVoice]] = None,
 ) -> tuple:
     """Generate one WAV per subtitle; GUI-independent batch worker core.
 
     Args:
-        work_items: iterable of (subtitle_index, subtitle_text) using the
-            EXACT model text (already cleaned by the caller if needed).
+        work_items: iterable of (subtitle_index, subtitle_text) or
+            (subtitle_index, subtitle_text, voice_name). A per-item voice
+            name selects that voice from ``voices_by_name``; an empty name
+            (or no map) falls back to the global ``voice`` for compatibility.
         output_dir: directory receiving subtitle_IIII_<batch_id>.wav files.
         batch_id: unique id for this batch run.
-        voice: the single selected PiperVoice for the whole batch.
+        voice: fallback/global PiperVoice (also used when no per-item map).
         cancel_event: optional threading.Event; checked before each item.
         progress_callback: optional callable
             (batch_id, done, total, subtitle_index, ok, detail).
+        voices_by_name: optional {voice_name: PiperVoice} for per-subtitle
+            voices. Unknown names record an error and skip that subtitle.
 
     Returns:
         (success_map, errors): {index: wav_path}, {index: error message}.
@@ -466,19 +482,46 @@ def generate_batch_voices(
     except OSError as exc:
         raise PiperSynthesisError(f"Cannot create output directory: {exc}") from exc
 
+    def _voice_for(index: int, item_voice_name: str) -> PiperVoice:
+        wanted = (item_voice_name or "").strip()
+        if voices_by_name is not None and wanted:
+            if hasattr(voices_by_name, "get"):
+                resolved = voices_by_name.get(wanted)
+            else:
+                resolved = resolve_voice_by_name(voices_by_name, wanted)
+            if resolved is None:
+                raise PiperSynthesisError(
+                    f"Voice '{wanted}' is not available."
+                )
+            return resolved
+        return voice
+
     success_map: dict = {}
     errors: dict = {}
-    for position, (subtitle_index, subtitle_text) in enumerate(items, start=1):
+    for position, item in enumerate(items, start=1):
+        subtitle_index, subtitle_text = item[0], item[1]
+        item_voice_name = item[2] if len(item) > 2 else ""
         if cancel_event is not None and cancel_event.is_set():
             print(f"[VOICE BATCH] batch_request_id={batch_id} cancelled "
                   f"after {position - 1}/{total}")
             break
         output_path = batch_output_path(out_dir, subtitle_index, batch_id)
+        try:
+            item_voice = _voice_for(subtitle_index, item_voice_name)
+        except PiperSynthesisError as exc:
+            errors[subtitle_index] = str(exc)
+            print(f"[VOICE BATCH] subtitle_index={subtitle_index} "
+                  f"voice={item_voice_name!r} return=failed-voice "
+                  f"error={exc}")
+            if progress_callback is not None:
+                progress_callback(batch_id, position, total, subtitle_index,
+                                  False, str(exc))
+            continue
         print("[VOICE BATCH]")
         print(f"batch_request_id={batch_id}")
         print(f"subtitle_index={subtitle_index}")
         print(f"text={subtitle_text!r}")
-        print(f"voice={voice.name}")
+        print(f"voice={item_voice.name}")
         print(f"output_wav={output_path}")
         if not isinstance(subtitle_text, str) or not subtitle_text.strip():
             errors[subtitle_index] = "Subtitle text is empty."
@@ -490,7 +533,7 @@ def generate_batch_voices(
             continue
         try:
             synthesize(
-                subtitle_text, voice, output_path,
+                subtitle_text, item_voice, output_path,
                 piper_cmd=piper_cmd, speaker=speaker, timeout=timeout,
                 espeak_voice=espeak_voice, request_id=f"{batch_id}#{subtitle_index}",
             )

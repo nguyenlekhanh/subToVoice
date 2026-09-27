@@ -18,6 +18,7 @@ from services.piper_service import (
     VoicePreviewResult,
     batch_output_path,
     generate_batch_voices,
+    resolve_voice_by_name,
     wav_info,
 )
 from services.ffmpeg_service import FFmpegService, probe_mp4
@@ -988,7 +989,7 @@ class VideoVoiceEditorApp:
 
     def _create_voice_area(self, parent):
         """Create the Piper voice-selection area."""
-        frame = ttk.LabelFrame(parent, text="Piper Voice")
+        frame = ttk.LabelFrame(parent, text="Default Voice")
         frame.pack(fill=tk.X, pady=(5, 0))
 
         self.voice_var = tk.StringVar(value="Discovering Piper voices...")
@@ -1115,11 +1116,41 @@ class VideoVoiceEditorApp:
         text = raw_text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
         return text.strip(" \t\n")
 
+    def _default_voice_name(self):
+        """Global default voice name for subtitles without their own voice."""
+        if self.state.selected_voice is not None:
+            return self.state.selected_voice.name
+        if self._piper_voices:
+            return self._piper_voices[0].name
+        return ""
+
+    def _resolve_subtitle_voice(self, subtitle):
+        """Resolve the PiperVoice for synthesis: subtitle.voice wins.
+
+        Returns (voice, warning_message). Falls back to the global default
+        voice with a warning when the assigned voice is missing/unknown;
+        returns (None, error) when no usable voice exists at all.
+        """
+        name = (subtitle.voice or "").strip()
+        if name:
+            voice = resolve_voice_by_name(self._piper_voices, name)
+            if voice is not None:
+                return voice, ""
+            if self.state.selected_voice is not None:
+                return self.state.selected_voice, (
+                    f"Voice '{name}' is not available; using default voice."
+                )
+            return None, f"Voice '{name}' is not available."
+        if self.state.selected_voice is not None:
+            return self.state.selected_voice, ""
+        return None, "Please select a Piper voice first."
+
     def _get_selected_subtitle_for_preview(self):
         """Single source of truth: CURRENT Treeview item -> live model subtitle.
 
         Returns (subtitle_index, raw_subtitle_text, voice, error_message).
-        No cached/stale/fallback subtitle, voice, or text -- ever.
+        The voice is subtitle.voice resolved through discovery (global default
+        only as a warned fallback). No cached/stale/fallback text -- ever.
         """
         selection = self.subtitle_tree.selection()
         if not selection:
@@ -1139,19 +1170,34 @@ class VideoVoiceEditorApp:
         if subtitle is None:
             return None, "", None, f"Selected subtitle #{subtitle_index} no longer exists."
         raw_text = subtitle.text if isinstance(subtitle.text, str) else ""
-        voice = self.state.selected_voice
+        voice, voice_note = self._resolve_subtitle_voice(subtitle)
         if voice is None:
-            return None, "", None, "Please select a Piper voice first."
+            return None, "", None, voice_note
+        if voice_note:
+            self._update_status(voice_note)
         return subtitle_index, raw_text, voice, ""
 
     def _update_preview_button_state(self):
-        """Enable Preview Voice only when a subtitle+voice are ready."""
+        """Enable Preview Voice when the selection resolves to a usable voice."""
         if self.btn_preview_voice is None:
             return
         if self._preview_generating:
             self.btn_preview_voice.config(state=tk.DISABLED, text="Generating...")
             return
-        ready = bool(self.subtitle_tree.selection()) and self.state.selected_voice is not None
+        ready = False
+        selection = self.subtitle_tree.selection()
+        if selection:
+            values = self.subtitle_tree.item(selection[0], "values")
+            if values:
+                try:
+                    wanted = int(values[0])
+                except (TypeError, ValueError):
+                    wanted = None
+                for sub in self.state.subtitles:
+                    if sub.index == wanted:
+                        voice, _ = self._resolve_subtitle_voice(sub)
+                        ready = voice is not None
+                        break
         self.btn_preview_voice.config(
             state=tk.NORMAL if ready else tk.DISABLED, text="Preview Voice"
         )
@@ -1347,7 +1393,7 @@ class VideoVoiceEditorApp:
                     state=tk.NORMAL if self._batch_generating else tk.DISABLED
                 )
             return
-        ready = bool(self.state.subtitles) and self.state.selected_voice is not None
+        ready = bool(self.state.subtitles) and bool(self._piper_voices)
         self.btn_generate_all.config(state=tk.NORMAL if ready else tk.DISABLED)
         if self.btn_cancel_batch is not None:
             self.btn_cancel_batch.config(state=tk.DISABLED)
@@ -1356,18 +1402,14 @@ class VideoVoiceEditorApp:
         """Capture the full subtitle work list and start the batch worker."""
         if self._batch_generating or self._compose_generating:
             return
-        voice = self.state.selected_voice
-        if voice is None:
-            self._update_status("Please select a Piper voice first.")
-            messagebox.showinfo("Generate All Voices", "Please select a Piper voice first.")
-            return
         if not self.state.subtitles:
             self._update_status("No subtitles loaded.")
             messagebox.showinfo("Generate All Voices", "Please load an SRT file first.")
             return
 
-        # Immutable work list from the MODEL (never Treeview display strings,
-        # never " | " joined text); the worker only sees these captured values.
+        # Immutable work list from the MODEL, each row with ITS OWN voice
+        # (never Treeview display strings, never " | " joined text, never the
+        # global voice); the worker only sees these captured values.
         work_items = []
         for sub in self.state.subtitles:
             raw = sub.text if isinstance(sub.text, str) else ""
@@ -1376,12 +1418,34 @@ class VideoVoiceEditorApp:
                 self._clean_preview_text(raw),
                 sub.start_ms,
                 sub.end_ms,
+                (sub.voice or "").strip(),
             ))
+
+        # Fail fast: every subtitle needs a usable voice before starting.
+        for index, _, _, _, voice_name in work_items:
+            print(f"[VOICE BATCH] captured subtitle_index={index} voice={voice_name!r}")
+        missing = [
+            index for index, _, _, _, voice_name in work_items
+            if resolve_voice_by_name(self._piper_voices, voice_name) is None
+        ]
+        if missing:
+            shown = ", ".join(f"#{index}" for index in missing[:10])
+            self._update_status(
+                f"Cannot generate voices. Missing voice for subtitle {shown}."
+            )
+            messagebox.showinfo(
+                "Generate All Voices",
+                "Cannot generate voices.\n"
+                f"Subtitle {shown} has no valid voice assigned.\n"
+                "Double-click its Voice cell to assign one.",
+            )
+            return
 
         batch_id = uuid.uuid4().hex[:8]
         self._batch_request_id = batch_id
         self._batch_cancel_event = threading.Event()
         self._batch_generating = True
+        self._batch_voice_names = {item[4] for item in work_items}
         self._update_batch_button_state()
         self._update_compose_button_state()
         if self.batch_progress is not None:
@@ -1390,7 +1454,8 @@ class VideoVoiceEditorApp:
 
         self._batch_thread = threading.Thread(
             target=self._batch_worker,
-            args=(batch_id, work_items, voice),
+            args=(batch_id, work_items,
+                  {voice.name: voice for voice in self._piper_voices}),
             daemon=True,
         )
         self._batch_thread.start()
@@ -1402,9 +1467,14 @@ class VideoVoiceEditorApp:
             self._batch_cancel_event.set()
         self._update_status("Cancelling voice generation...")
 
-    def _batch_worker(self, batch_id: str, work_items, voice):
-        """Run the batch off the Tkinter main thread (no widget access)."""
-        texts = [(index, text) for index, text, _, _ in work_items]
+    def _batch_worker(self, batch_id: str, work_items, voices_by_name):
+        """Run the batch off the Tkinter main thread (no widget access).
+
+        Each work item already carries its own voice name; the captured map
+        cannot be altered by later UI changes.
+        """
+        texts = [(index, text, voice_name)
+                 for index, text, _, _, voice_name in work_items]
         project_root = Path(__file__).resolve().parent.parent
         output_dir = project_root / "temp" / "voices"
 
@@ -1414,10 +1484,14 @@ class VideoVoiceEditorApp:
             )
 
         try:
+            # Fallback is unreachable after pre-validation (every item carries
+            # a resolved name) but the service requires a valid voice object.
+            fallback = next(iter(voices_by_name.values()))
             success_map, errors = generate_batch_voices(
-                texts, output_dir, batch_id, voice,
+                texts, output_dir, batch_id, fallback,
                 cancel_event=self._batch_cancel_event,
                 progress_callback=_progress,
+                voices_by_name=voices_by_name,
             )
             cancelled = (self._batch_cancel_event is not None
                          and self._batch_cancel_event.is_set())
@@ -1452,8 +1526,9 @@ class VideoVoiceEditorApp:
                     self.state.subtitle_audio_paths = dict(success_map)
                     self.state.subtitle_audio_errors = dict(errors)
                     self.state.audio_batch_id = batch_id
-                    self.state.audio_voice_name = getattr(
-                        self.state.selected_voice, "name", None
+                    batch_voices = getattr(self, "_batch_voice_names", set()) or set()
+                    self.state.audio_voice_name = (
+                        next(iter(batch_voices)) if len(batch_voices) == 1 else None
                     )
                     # Fresh WAVs invalidate any previous composition.
                     self.state.clear_composed_audio()
@@ -2346,6 +2421,14 @@ class VideoVoiceEditorApp:
                 self.state.srt_path = file_path
                 self.state.subtitles = subtitles
                 self.state.clear_audio_mappings()
+                # Default voice for rows without their own assignment.
+                default_voice = self._default_voice_name()
+                if default_voice:
+                    for sub in subtitles:
+                        if not (sub.voice or "").strip():
+                            sub.voice = default_voice
+                else:
+                    self._update_status("No Piper voice available; Voice left empty.")
                 self._batch_insert_subtitles = subtitles
                 self._batch_insert_index = 0
                 self._insert_batch()
@@ -2425,9 +2508,9 @@ class VideoVoiceEditorApp:
         if not item:
             return
         
-        # Only allow editing of start, end, and text columns
+        # Only allow editing of start, end, text, and voice columns
         col_name = self._get_col_name_from_column(column)
-        if col_name not in ("start", "end", "text"):
+        if col_name not in ("start", "end", "text", "voice"):
             return
         
         # Get current value
@@ -2438,6 +2521,10 @@ class VideoVoiceEditorApp:
         # Get column index
         col_idx = int(column.replace("#", "")) - 1
         current_value = current_values[col_idx]
+
+        if col_name == "voice":
+            self._start_voice_edit(item, col_idx, current_value)
+            return
         
         # Start editing
         self._start_treeview_edit(item, col_name, col_idx, current_value)
@@ -2479,6 +2566,55 @@ class VideoVoiceEditorApp:
         self._edit_entry.focus_set()
         self._edit_entry.select_range(0, tk.END)
 
+    def _start_voice_edit(self, item, col_idx, current_value):
+        """Start in-place voice selection with a Combobox over the Voice cell."""
+        if getattr(self, '_edit_entry', None):
+            self._cancel_treeview_edit()
+        if not self._piper_voices:
+            self._update_status("No Piper voices available.")
+            messagebox.showinfo("Voice", "No Piper voices discovered yet.")
+            return
+
+        # Get cell bounding box
+        cell_bbox = self.subtitle_tree.bbox(item, f"#{col_idx+1}")
+        if not cell_bbox or len(cell_bbox) < 4:
+            return
+        x, y, width, height = cell_bbox
+        if width <= 0 or height <= 0:
+            return
+
+        # Reuse the shared edit slot so Entry/Combobox editors cancel cleanly.
+        self._edit_entry = ttk.Combobox(
+            self.subtitle_tree,
+            values=tuple(voice.name for voice in self._piper_voices),
+            state="readonly",
+        )
+        self._edit_entry.place(x=x, y=y, width=width, height=height)
+
+        if self._edit_var is None:
+            self._edit_var = tk.StringVar()
+        self._edit_var.set(current_value)
+        self._edit_entry.config(textvariable=self._edit_var)
+
+        # Store edit context
+        self._edit_item = item
+        self._edit_col_name = "voice"
+        self._edit_col_idx = col_idx
+
+        # Bind events: explicit pick commits; abandoning the dropdown must
+        # NEVER commit (unlike Entry editing, there is no typed text to save,
+        # and FocusOut fires while the dropdown listbox is still open).
+        self._edit_entry.bind("<<ComboboxSelected>>", self._on_treeview_enter)
+        self._edit_entry.bind("<Return>", self._on_treeview_enter)
+        self._edit_entry.bind("<Escape>", self._on_treeview_escape)
+        self._edit_entry.bind("<FocusOut>", self._on_voice_edit_focus_out)
+
+        # Focus so keyboard navigation works; the user opens the dropdown
+        # with the arrow (no programmatic open: it races focus handling).
+        self._edit_entry.focus_set()
+        print("[VOICE ASSIGN]")
+        print(f"editing subtitle item={item} current={current_value!r}")
+
     def _get_col_name_from_column(self, column):
         """Map column identifier to column name"""
         col_map = {"#1": "index", "#2": "start", "#3": "end", "#4": "text", "#5": "voice"}
@@ -2498,6 +2634,20 @@ class VideoVoiceEditorApp:
     def _on_treeview_escape(self, event=None):
         """Cancel Treeview cell edit"""
         self._cancel_treeview_edit()
+
+    def _on_voice_edit_focus_out(self, event=None):
+        """Abandon a pending voice edit (dropdown dismissed without picking).
+
+        Deferred so a real <<ComboboxSelected>>/Return commit landing first
+        clears the slot and makes this a no-op. Never commits: a readonly
+        dropdown has no typed text worth saving.
+        """
+        self.root.after(200, self._cancel_voice_edit_if_pending)
+
+    def _cancel_voice_edit_if_pending(self):
+        """Cancel only a still-pending voice edit (never an Entry edit)."""
+        if getattr(self, '_edit_col_name', None) == "voice":
+            self._cancel_treeview_edit()
 
     def _on_treeview_focus_out(self, event=None):
         """Save edit when focus leaves entry"""
@@ -2524,7 +2674,7 @@ class VideoVoiceEditorApp:
         self._edit_col_name = None
         self._edit_col_idx = -1
         
-        if not item or col_name not in ("start", "end", "text"):
+        if not item or col_name not in ("start", "end", "text", "voice"):
             return
         
         # Get subtitle index
@@ -2547,6 +2697,7 @@ class VideoVoiceEditorApp:
         old_start = subtitle.start_ms
         old_end = subtitle.end_ms
         old_text = subtitle.text
+        old_voice = subtitle.voice
         
         try:
             if col_name == "text":
@@ -2587,6 +2738,19 @@ class VideoVoiceEditorApp:
                 subtitle.end_ms = new_end_ms
                 self.subtitle_tree.set(item, "end", self._format_timestamp_display(new_end_ms))
                 self._update_subtitle_block_position(subtitle)
+
+            elif col_name == "voice":
+                # Voice must be a currently discovered Piper voice.
+                if resolve_voice_by_name(self._piper_voices, new_value) is None:
+                    raise ValueError(f"Voice '{new_value}' is not available.")
+                new_voice = new_value.strip()
+                if new_voice == (subtitle.voice or ""):
+                    return  # Opened but unchanged: keep audio valid.
+                subtitle.voice = new_voice
+                self.subtitle_tree.set(item, "voice", subtitle.voice)
+                print("[VOICE ASSIGN]")
+                print(f"subtitle_index={subtitle.index} voice={subtitle.voice}")
+                # Timeline blocks carry no voice: visuals stay identical.
             
             # Generated audio for this subtitle is stale after any edit.
             self.state.invalidate_subtitle_audio(subtitle.index)
@@ -2606,6 +2770,8 @@ class VideoVoiceEditorApp:
                 self.subtitle_tree.set(item, "start", self._format_timestamp_display(old_start))
             elif col_name == "end":
                 self.subtitle_tree.set(item, "end", self._format_timestamp_display(old_end))
+            elif col_name == "voice":
+                self.subtitle_tree.set(item, "voice", old_voice)
             self._update_status(f"Error: {e}")
         except Exception as e:
             self._update_status(f"Unexpected error: {e}")
@@ -2857,6 +3023,23 @@ class VideoVoiceEditorApp:
         self.state.srt_path = resolve_path(data.get("srt_path"), project_file)
         self.state.subtitles = subtitle_objects
         self.state.selected_subtitle = None
+        # Saved per-subtitle voices win; empty ones get the default voice.
+        # Unknown saved names are PRESERVED in the model (never substituted).
+        default_voice = self._default_voice_name()
+        filled_voices = 0
+        for sub in subtitle_objects:
+            if not (sub.voice or "").strip() and default_voice:
+                sub.voice = default_voice
+                filled_voices += 1
+        if filled_voices:
+            print(f"[VOICE ASSIGN] project load filled default voice "
+                  f"for {filled_voices} subtitle(s)")
+        unavailable_voices = sorted({
+            sub.voice.strip()
+            for sub in subtitle_objects
+            if (sub.voice or "").strip()
+            and resolve_voice_by_name(self._piper_voices, sub.voice) is None
+        })
         self.state.clear_audio_mappings()
         self.state.clear_composed_audio()
         self.state.clear_final_mp4()
@@ -2912,6 +3095,11 @@ class VideoVoiceEditorApp:
             self._select_subtitle_by_index(subtitle_objects[0].index)
 
         warnings = []
+        if unavailable_voices:
+            warnings.append(
+                "Saved voice(s) not available: "
+                + ", ".join(unavailable_voices[:10])
+            )
         if saved_video and not Path(saved_video).is_file():
             warnings.append(f"Video file missing: {saved_video}")
         for index in missing_audio:

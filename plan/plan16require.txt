@@ -1,0 +1,95 @@
+PLAN 16 REQUIREMENTS
+
+Plan Number: 16
+Plan Name: Per-Subtitle Voice Assignment
+
+Baseline: working PLAN 15 (Preview PLAN 10, batch PLAN 11, projects PLAN 14,
+cleanup PLAN 15). Reuse, do not rewrite; preserve all behavior.
+
+Goal: each subtitle row owns its Piper voice (e.g. #1 banmai, #2 ngochuyen,
+#3 cuc, #4 phuongtrang); synthesis uses subtitle.voice, never one global
+voice for all subtitles.
+
+1. Voice column: keep the existing Treeview Voice column (no duplicate);
+each row shows its assigned voice from the subtitle model (Treeview never
+the source of truth).
+2. Default voice: newly SRT-loaded subtitles without a voice get a
+reasonable default (current selected/default discovered voice; never a
+nonexistent hardcoded name; empty + warning when no voices exist).
+3. Per-subtitle change: double-click Voice cell -> Combobox of discovered
+voices -> select; then update model + Treeview, preserve selection, mark
+dirty, invalidate that subtitle's audio + composed + Final MP4. No auto
+regeneration; explicit Preview/Generate only.
+4. Cell editing reuses the existing Entry-based architecture (single edit
+slot, no duplicate Comboboxes): dropdown on double-click, valid voices only,
+Enter commits, Escape cancels, FocusOut follows the existing pattern.
+5. Validation: GUI offers only discovered voices (no fake names); a saved
+voice that later disappears is kept, shown, warned about -- never silently
+replaced.
+6. Model: use existing Subtitle.voice; no redundant voice property.
+7. State: global selected voice stays as default/fallback/compat only; it
+must NOT control synthesis once a subtitle has its own voice. Minimal
+additive changes; remove nothing.
+8. Preview: uses subtitle[7].voice for subtitle #7 (captured index/text/
+voice/request_id before the worker; never Treeview reads in the worker);
+debug shows subtitle_index/voice/text_len. Global voice never overrides an
+assigned voice.
+9. Batch: immutable work list of {index, text, voice} per row; worker uses
+each item's voice; no Treeview/global reads mid-run; later UI edits cannot
+alter captured items.
+10. Batch output unchanged: temp/voices/subtitle_IIII_<batch>.wav per row;
+no voice names needed in filenames.
+11. Mapping stays subtitle_audio_paths[index]; voice lives in subtitle.voice;
+no second voice mapping unless necessary.
+12. Pre-batch validation: every subtitle needs a valid voice; missing ->
+fail fast naming the subtitles ("Cannot generate voices. Subtitle 4 has no
+voice assigned."), no silent random voice, no partial start.
+13. Partial synthesis failure preserved (18 ok / 2 failed with index+voice
+in logs); never claim full success.
+14. Voice change calls existing invalidate_subtitle_audio(index) (+composed/
+final cascade); old WAV left for safe cleanup; no auto regeneration.
+15. Text invalidation preserved; voice change invalidates the same way.
+16. Timing edits still invalidate composed/Final MP4 only (no WAV regen).
+17. Project Save keeps per-subtitle voices (already stored).
+18. Project Load restores Subtitle.voice each row; unknown saved voices kept,
+displayed, warned (user picks a valid one later); no auto regeneration.
+19. Global Combobox kept, reframed as Default Voice (default for new
+subtitles/fallback); assigned voices always win; never bulk-overwrites rows;
+remove only if trivially safe (prefer keeping).
+20. Row selection surfaces that row's voice; Preview needs no re-selection.
+21. Voice change updates only the affected row; no list rebuild, selection
+kept, no recursive selection events (PLAN 8 freeze avoidance).
+22. Timeline visually unchanged by voice edits (no move/retime/reposition).
+23. Preview request IDs + stale protection preserved; old-voice results can
+never overwrite new previews.
+24. Batch IDs + immutable voices preserved; mid-run voice edits cannot leak
+in; stale batches ignored.
+25. Cancel preserved and safe (voice edits mid-run cannot crash; no second
+batch while active).
+26. Piper service: reuse discovery; synthesize(text, voice, output_wav) per
+subtitle with real discovered PiperVoice objects; smallest change if the API
+assumed one global voice; no guessed paths/downloads/renames.
+27. Voice identity = existing PiperVoice name, resolved via the discovered
+list; no metadata duplication per subtitle.
+28. Tests in tests/test_per_subtitle_voice.py: 20 items (storage, distinct
+voices, isolated change, invalidation x3, preview capture/fallback, batch
+capture/multi-voice/capture-immutability, missing/invalid voice, save/load
+round-trip, unicode/multiline/index mapping, stale results). Mocks/fakes,
+no real Piper.
+29. Run existing suite (all areas); no removals, no weakened assertions.
+30. Manual 31-step checklist if runnable; never claim unperformed passes.
+31. [VOICE ASSIGN]/[VOICE PREVIEW]/[VOICE BATCH] logs with index+voice; full
+text only where already established.
+32. Logs plan/plan16require.txt (this file) + plan16result.txt (honest;
+spawn EFTYPE recorded exactly; no unrun passes claimed).
+33. Preserve everything listed (video/SRT/playback/timeline/selection/
+editing/discovery/preview/batch/cancel/compose/export/cleanup/shutdown/
+stale protection). No unrelated rewrites.
+34. PLAN 16 ONLY (no auto/gender/language selection, recommendations,
+cloning, models, engines, effects, pitch/speed/volume, waveforms,
+translation, splitting, auto-assignment, preview UI, format/cleanup changes).
+35. Architecture: Subtitle.voice -> Preview/Batch work item ->
+synthesize() -> WAV -> subtitle_audio_paths[index]; Save: Subtitle.voice ->
+.vveproj; Load: .vveproj -> Subtitle.voice -> Treeview.
+36. Quality checklist incl. duplicates/indentation/imports/syntax/column/
+preview/batch/override/invalidation/save-load/stale/cancel/tests/app run.
