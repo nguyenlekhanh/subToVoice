@@ -20,7 +20,7 @@ from services.piper_service import (
     generate_batch_voices,
     wav_info,
 )
-from services.ffmpeg_service import FFmpegService
+from services.ffmpeg_service import FFmpegService, probe_mp4
 from services.srt_service import SRTService, SRTParseError
 from services.video_service import VideoService, VideoLoadError
 
@@ -58,6 +58,11 @@ class VideoVoiceEditorApp:
         self._compose_generating = False
         self._compose_request_id = None
         self.btn_compose_audio = None
+        # PLAN 13 final MP4 export state
+        self._export_thread = None
+        self._export_result_queue = queue.Queue()
+        self._export_generating = False
+        self._export_request_id = None
         self._srt_load_thread = None
         self._srt_result_queue = queue.Queue()
         self._batch_insert_index = 0
@@ -171,7 +176,7 @@ class VideoVoiceEditorApp:
         self.btn_save_srt = ttk.Button(toolbar, text="Save SRT", command=self._on_save_srt)
         self.btn_save_srt.pack(side=tk.LEFT, padx=2)
 
-        self.btn_generate_mp4 = ttk.Button(toolbar, text="Generate Final MP4", command=self._on_generate_mp4)
+        self.btn_generate_mp4 = ttk.Button(toolbar, text="Generate Final MP4", command=self._on_generate_mp4, state=tk.DISABLED)
         self.btn_generate_mp4.pack(side=tk.LEFT, padx=2)
 
     def _create_video_preview(self, parent):
@@ -859,6 +864,7 @@ class VideoVoiceEditorApp:
                 self._drag_subtitle.end_ms = new_end_ms
                 self.state.invalidate_subtitle_audio(self._drag_subtitle.index)
                 self._update_compose_button_state()
+                self._update_export_button_state()
                 self._rebuild_timeline()
                 # Update Treeview
                 for item in self.subtitle_tree.get_children():
@@ -1429,6 +1435,7 @@ class VideoVoiceEditorApp:
                         self.batch_progress.config(value=len(success_map))
                     self._update_batch_button_state()
                     self._update_compose_button_state()
+                    self._update_export_button_state()
         except queue.Empty:
             pass
         if self._batch_generating:
@@ -1552,6 +1559,7 @@ class VideoVoiceEditorApp:
                     self._compose_generating = False
                     self._update_compose_button_state()
                     self._update_batch_button_state()
+                    self._update_export_button_state()
                 elif kind == "failed":
                     _, _, error = item
                     self.state.clear_composed_audio()
@@ -1562,6 +1570,7 @@ class VideoVoiceEditorApp:
                     self._compose_generating = False
                     self._update_compose_button_state()
                     self._update_batch_button_state()
+                    self._update_export_button_state()
         except queue.Empty:
             pass
         if self._compose_generating:
@@ -1685,6 +1694,7 @@ class VideoVoiceEditorApp:
             self._rebuild_timeline()
             self._update_status("Video loaded")
             self._update_compose_button_state()
+            self._update_export_button_state()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load video")
@@ -2220,6 +2230,7 @@ class VideoVoiceEditorApp:
             self._rebuild_timeline()
             self._update_batch_button_state()
             self._update_compose_button_state()
+            self._update_export_button_state()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load SRT: {error_msg}")
@@ -2449,6 +2460,7 @@ class VideoVoiceEditorApp:
             # Generated audio for this subtitle is stale after any edit.
             self.state.invalidate_subtitle_audio(subtitle.index)
             self._update_compose_button_state()
+            self._update_export_button_state()
             # Update timeline block
             self._rebuild_timeline()
             self._update_status(f"Updated {col_name} for subtitle {subtitle.index}")
@@ -2555,7 +2567,117 @@ class VideoVoiceEditorApp:
         self._update_status("Save SRT is not implemented yet.")
 
     def _on_generate_mp4(self):
-        self._update_status("Generate Final MP4 is not implemented yet.")
+        """Validate inputs and start the Final MP4 export worker."""
+        if self._export_generating:
+            return
+        if not self.state.video_path:
+            self._update_status("Please load a video first.")
+            messagebox.showinfo("Generate Final MP4", "Please load a video first.")
+            return
+        composed = self.state.composed_audio_path
+        if not composed or not Path(composed).is_file():
+            self._update_status("Please compose audio first.")
+            messagebox.showinfo(
+                "Generate Final MP4",
+                "No composed audio available.\n"
+                "Run Generate All Voices, then Compose Audio first.",
+            )
+            return
+
+        request_id = uuid.uuid4().hex[:8]
+        self._export_request_id = request_id
+        project_root = Path(__file__).resolve().parent.parent
+        output_path = project_root / "output" / f"final_{request_id}.mp4"
+        print("[MP4 EXPORT]")
+        print(f"request_id={request_id}")
+        print(f"input_video={self.state.video_path}")
+        print(f"input_audio={composed}")
+        print(f"output={output_path}")
+
+        self._export_generating = True
+        self.btn_generate_mp4.config(state=tk.DISABLED)
+        self._update_export_button_state()
+        self._update_status("Validating export...")
+
+        self._export_thread = threading.Thread(
+            target=self._export_worker,
+            args=(request_id, self.state.video_path, composed, str(output_path)),
+            daemon=True,
+        )
+        self._export_thread.start()
+        self.root.after(100, lambda _rid=request_id: self._check_export_result(_rid))
+
+    def _export_worker(self, request_id, video_path, composed_audio, output_path):
+        """Run FFmpeg muxing off the Tkinter main thread."""
+        try:
+            self._export_result_queue.put(("status", request_id, "Exporting Final MP4..."))
+            self._export_result_queue.put(
+                ("status", request_id, "FFmpeg muxing video and audio...")
+            )
+            result_path = self.ffmpeg_service.export_final_mp4(
+                video_path=video_path,
+                composed_audio_wav=composed_audio,
+                output_mp4=output_path,
+                request_id=request_id,
+            )
+            self._export_result_queue.put(("done", request_id, str(result_path)))
+        except Exception as exc:
+            self._export_result_queue.put(("failed", request_id, str(exc)))
+
+    def _check_export_result(self, request_id=None):
+        """Consume export results on the Tkinter main thread."""
+        try:
+            while True:
+                item = self._export_result_queue.get_nowait()
+                kind = item[0]
+                if request_id is not None and item[1] != request_id:
+                    print(f"[MP4 EXPORT] ignoring stale result request_id={item[1]}")
+                    continue
+                if kind == "status":
+                    self._update_status(item[2])
+                elif kind == "done":
+                    _, _, output_path = item
+                    self.state.final_mp4_path = output_path
+                    self.state.final_mp4_request_id = request_id
+                    try:
+                        probe = probe_mp4(output_path)
+                        self.state.final_mp4_duration_s = probe.get("duration_s")
+                    except Exception:
+                        self.state.final_mp4_duration_s = None
+                    self._update_status(f"Final MP4 created: {output_path}")
+                    messagebox.showinfo(
+                        "Generate Final MP4", f"Final MP4 created:\n{output_path}"
+                    )
+                    print("[MP4 EXPORT]")
+                    print(f"request_id={request_id}")
+                    print(f"final_mp4={output_path}")
+                    self._export_generating = False
+                    self._update_export_button_state()
+                elif kind == "failed":
+                    _, _, error = item
+                    self.state.clear_final_mp4()
+                    self._update_status(f"Final MP4 export failed: {error}")
+                    messagebox.showerror(
+                        "Generate Final MP4", f"Final MP4 export failed:\n{error}"
+                    )
+                    self._export_generating = False
+                    self._update_export_button_state()
+        except queue.Empty:
+            pass
+        if self._export_generating:
+            self.root.after(100, lambda _rid=request_id: self._check_export_result(_rid))
+
+    def _update_export_button_state(self):
+        """Enable Generate Final MP4 only when video + composed audio are ready."""
+        if self._export_generating:
+            self.btn_generate_mp4.config(state=tk.DISABLED)
+            return
+        ready = (
+            bool(self.state.video_path)
+            and bool(self.state.composed_audio_path)
+            and Path(self.state.composed_audio_path).is_file()
+        )
+        self.btn_generate_mp4.config(state=tk.NORMAL if ready else tk.DISABLED)
 
     def run(self):
         """Start the application main loop"""

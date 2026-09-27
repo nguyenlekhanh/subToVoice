@@ -1,0 +1,71 @@
+PLAN 13 RESULT (Final MP4 export)
+
+1. Date
+2026-09-27
+
+2. Status
+PARTIAL (code complete; no runtime verification possible here).
+
+3. What was implemented
+- services/ffmpeg_service.py (PLAN 12 code untouched; old NotImplementedError
+  PLAN 13 placeholders left as-is): FFmpegExportError; build_export_command()
+  pure function (validation + argv); export_final_mp4() (exe discovery,
+  mkdir, run, verify); probe_mp4() (ffprobe facts or {"error"} when
+  unavailable); FFmpegService.export_final_mp4() delegating method. No
+  Tkinter; no shell=True; returncode/stdout/stderr captured.
+- Command: ffmpeg -y -i <video> -i <composed.wav> -map 0:v:0 -map 1:a:0
+  -c:v copy -c:a aac -b:a 192k -movflags +faststart <output.mp4>. Composed
+  voice is THE single audio track (original audio replaced, never mixed in);
+  inputs never modified.
+- Design decisions: video stream copy (no re-encode/filters/resolution
+  change); NO -shortest (it would truncate VIDEO on any audio shortfall;
+  PLAN 12 already duration-matches, so omission is the safe choice);
+  +faststart for playable MP4s; output output/final_<request_id>.mp4.
+- app/state.py: final_mp4_path/request_id/duration_s + clear_final_mp4(),
+  cascaded from clear_video_state, clear_audio_mappings, clear_composed_audio
+  (covers video/SRT reload, text/timing edit, drag, batch regen, compose
+  regen/failure).
+- app/ui.py (existing logic untouched except additive hooks): Generate Final
+  MP4 button now exports for real (was a placeholder status); starts DISABLED;
+  requires video + existing composed file with clear missing-input messages;
+  captured (video, audio, output, request_id) -> worker -> queue ->
+  root.after() with stale-id dropping; statuses Validating/Exporting/FFmpeg
+  muxing/complete + success path dialog; probe_mp4 duration stored best-effort;
+  button disabled while exporting, refreshed on video load, SRT load, batch
+  completion, compose completion/failure, edit/drag invalidation.
+- tests/test_ffmpeg_export.py (new, no GUI): missing video/audio/output,
+  non-mp4 output, command tokens (both inputs, both maps, copy, AAC, output
+  position), failing-process reporting, state + all four invalidation paths,
+  RealFFmpegExportTest (skips without ffmpeg): tiny testsrc video + sine WAV
+  -> asserts MP4 exists/nonzero, source video byte-identical, streams
+  video+AAC, duration ~= source.
+- plan/plan13require.txt + plan/plan13result.txt (this file): created.
+
+4. Files changed
+services/ffmpeg_service.py, app/state.py, app/ui.py,
+tests/test_ffmpeg_export.py, plan/plan13require.txt, plan/plan13result.txt.
+PLAN 10/11/12 synthesis, discovery, playback, timeline, editing, SRT, batch,
+compose paths: untouched. No subtitle burn-in (video stream copied as-is).
+
+5. Tests actually executed
+- NONE. `python -m py_compile services/ffmpeg_service.py` / `app/ui.py` /
+  `app/state.py`: all blocked (spawn EFTYPE). Unit tests, `python main.py`,
+  real-FFmpeg export: not attempted (same blocked path). New tests written
+  but UNRUN (real-FFmpeg test self-skips without ffmpeg).
+
+6. Tests that failed
+- None observed (nothing could run). Static grep audit confirmed one export
+  chain, all invalidation cascades, and the repaired import block.
+
+7. Environment limitations
+- All Python/shell execution returns `spawn EFTYPE` with no output. FFmpeg/
+  ffprobe presence UNKNOWN here.
+
+8. Whether real FFmpeg export was verified
+- NO. Not verified: MP4 existence/streams/AAC/duration, source untouched,
+  GUI export, PLAN 10/11/12 regression. Manual procedure: load video+SRT ->
+  Generate All Voices -> Compose Audio -> Generate Final MP4 -> check
+  output/final_*.mp4 plays with voice audio and matches video duration.
+  (Note: a collateral import-line syntax break introduced during PLAN 12 was
+  found via the user's `python main.py` traceback and fixed; same class of
+  breakage re-swept after these edits via grep.)

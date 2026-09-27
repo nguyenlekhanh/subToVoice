@@ -70,6 +70,31 @@ class FFmpegService:
             ffmpeg_path=self.find_ffmpeg(),
         )
 
+    def export_final_mp4(
+        self,
+        *,
+        video_path: PathLike,
+        composed_audio_wav: PathLike,
+        output_mp4: PathLike,
+        audio_bitrate: str = "192k",
+        timeout: int = 600,
+        request_id: Optional[str] = None,
+    ) -> Path:
+        """Mux original video with composed voice audio into a final MP4.
+
+        Video stream is copied untouched; the composed WAV becomes the single
+        AAC audio track (replacing any original audio). Never modifies inputs.
+        """
+        return export_final_mp4(
+            video_path=video_path,
+            composed_audio_wav=composed_audio_wav,
+            output_mp4=output_mp4,
+            audio_bitrate=audio_bitrate,
+            timeout=timeout,
+            request_id=request_id,
+            ffmpeg_path=self.find_ffmpeg(),
+        )
+
 
 class FFmpegComposeError(Exception):
     """Raised when audio composition cannot be completed."""
@@ -243,4 +268,155 @@ def compose_subtitle_audio(
             f"{stderr[-800:] or 'no error output'}"
         )
     _read_wav_header(output_path)
+    return output_path
+
+
+class FFmpegExportError(Exception):
+    """Raised when Final MP4 export cannot be completed."""
+
+
+def _check_real_file(path: Path, label: str) -> None:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise FFmpegExportError(f"{label} is missing: {path} ({exc})") from exc
+    if not path.is_file():
+        raise FFmpegExportError(f"{label} is not a file: {path}")
+    if size <= 0:
+        raise FFmpegExportError(f"{label} is empty: {path}")
+
+
+def build_export_command(
+    *,
+    ffmpeg_path: str,
+    video_path: PathLike,
+    composed_audio_wav: PathLike,
+    output_mp4: PathLike,
+    audio_bitrate: str = "192k",
+) -> list:
+    """Validate export inputs and build the FFmpeg mux argv (no execution)."""
+    video = Path(video_path)
+    audio = Path(composed_audio_wav)
+    _check_real_file(video, "Input video")
+    _check_real_file(audio, "Composed audio")
+    try:
+        _read_wav_header(audio)
+    except FFmpegComposeError as exc:
+        raise FFmpegExportError(str(exc)) from exc
+    out = Path(output_mp4)
+    if not out.suffix.lower() == ".mp4":
+        raise FFmpegExportError(f"Output must be an .mp4 file: {out}")
+    return [
+        ffmpeg_path,
+        "-y",
+        "-i", str(video),
+        "-i", str(audio),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", audio_bitrate,
+        "-movflags", "+faststart",
+        str(out),
+    ]
+
+
+def probe_mp4(mp4_path: PathLike) -> dict:
+    """Inspect an MP4 with ffprobe; returns facts or {"error": ...}."""
+    path = Path(mp4_path)
+    probe = shutil.which("ffprobe")
+    if not probe:
+        return {"path": str(path), "error": "ffprobe unavailable"}
+    try:
+        import json as _json
+
+        result = subprocess.run(
+            [probe, "-v", "error", "-show_streams", "-show_format",
+             "-of", "json", str(path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"path": str(path), "error": f"ffprobe failed: {exc}"}
+    if result.returncode != 0:
+        return {"path": str(path), "error": "ffprobe returned nonzero"}
+    try:
+        data = _json.loads((result.stdout or b"").decode("utf-8", errors="replace"))
+    except ValueError as exc:
+        return {"path": str(path), "error": f"ffprobe output unparseable: {exc}"}
+    streams = data.get("streams", [])
+    video = [s for s in streams if s.get("codec_type") == "video"]
+    audio = [s for s in streams if s.get("codec_type") == "audio"]
+    duration = data.get("format", {}).get("duration")
+    try:
+        duration_s = round(float(duration), 3) if duration else 0.0
+    except (TypeError, ValueError):
+        duration_s = 0.0
+    return {
+        "path": str(path),
+        "has_video": bool(video),
+        "has_audio": bool(audio),
+        "audio_codec": audio[0].get("codec_name", "") if audio else "",
+        "duration_s": duration_s,
+    }
+
+
+def export_final_mp4(
+    *,
+    video_path: PathLike,
+    composed_audio_wav: PathLike,
+    output_mp4: PathLike,
+    audio_bitrate: str = "192k",
+    timeout: int = 600,
+    request_id: Optional[str] = None,
+    ffmpeg_path: Optional[str] = None,
+) -> Path:
+    """Mux original video (stream copy) with composed voice audio (AAC)."""
+    exe = ffmpeg_path or shutil.which("ffmpeg")
+    if not exe:
+        raise FFmpegExportError(
+            "FFmpeg was not found. Please make sure FFmpeg is installed "
+            "and available in PATH."
+        )
+    output_path = Path(output_mp4)
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise FFmpegExportError(f"Cannot create output directory: {exc}") from exc
+
+    cmd = build_export_command(
+        ffmpeg_path=exe, video_path=video_path,
+        composed_audio_wav=composed_audio_wav, output_mp4=output_path,
+        audio_bitrate=audio_bitrate,
+    )
+    print("[MP4 EXPORT]")
+    print(f"request_id={request_id}")
+    print(f"input_video={video_path}")
+    print(f"input_audio={composed_audio_wav}")
+    print(f"output={output_path}")
+    print(f"[MP4 EXPORT] CMD: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout, check=False,
+        )
+    except FileNotFoundError as exc:
+        raise FFmpegExportError(f"FFmpeg executable not found: {exe} ({exc})") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegExportError("FFmpeg export timed out.") from exc
+    except OSError as exc:
+        raise FFmpegExportError(f"Cannot launch FFmpeg: {exc}") from exc
+
+    stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
+    print(f"[MP4 EXPORT] ffmpeg_returncode={result.returncode}")
+    if stderr:
+        print(f"[MP4 EXPORT] stderr={stderr[-800:]!r}")
+    if result.returncode != 0:
+        raise FFmpegExportError(
+            f"FFmpeg export failed (exit {result.returncode}): "
+            f"{stderr[-800:] or 'no error output'}"
+        )
+    _check_real_file(output_path, "Output MP4")
+    print(f"[MP4 EXPORT] output_exists=True output_size={output_path.stat().st_size}")
     return output_path

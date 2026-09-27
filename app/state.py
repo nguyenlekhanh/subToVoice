@@ -35,6 +35,11 @@ class AppState:
         self.composed_audio_duration_s = None  # composed duration in seconds
         self.composed_audio_request_id = None  # request that produced it
 
+        # PLAN 13 final MP4 export.
+        self.final_mp4_path = None  # exported MP4 path
+        self.final_mp4_request_id = None  # export request that produced it
+        self.final_mp4_duration_s = None  # exported duration in seconds
+
     def clear_video_state(self):
         """Clear video-related state"""
         self.video_path = None
@@ -45,6 +50,7 @@ class AppState:
         self.video_duration_ms = 0
         self.video_has_audio = False
         self.video_first_frame_path = None
+        self.clear_final_mp4()
 
     def clear_playback_state(self):
         """Clear playback-related state"""
@@ -59,6 +65,7 @@ class AppState:
         self.audio_voice_name = None
         self.audio_batch_id = None
         self.clear_composed_audio()
+        self.clear_final_mp4()
 
     def invalidate_subtitle_audio(self, subtitle_index):
         """Drop the generated WAV mapping for one edited subtitle.
@@ -75,3 +82,10 @@ class AppState:
         self.composed_audio_path = None
         self.composed_audio_duration_s = None
         self.composed_audio_request_id = None
+        self.clear_final_mp4()
+
+    def clear_final_mp4(self):
+        """Forget the exported MP4 (any upstream input changed)."""
+        self.final_mp4_path = None
+        self.final_mp4_request_id = None
+        self.final_mp4_duration_s = None

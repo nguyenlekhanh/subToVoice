@@ -1,0 +1,65 @@
+PLAN 13 REQUIREMENTS
+
+Plan Number: 13
+Plan Name: Final MP4 Export
+
+Baseline: working PLAN 12 (composed timeline WAV + state). Reuse PLAN 10/11/12
+code; do NOT rewrite them. PLAN 14/15 out of scope.
+
+Goal: Final MP4 = current video + PLAN 12 composed audio. Playable MP4 with
+original video and new subtitle voice audio. Source video never modified.
+
+1. Service (services/ffmpeg_service.py, GUI-independent): export_final_mp4(
+video, composed WAV, output MP4). No Tkinter dependency.
+2. Validation: video exists/real file/nonzero; composed audio exists/real
+file/nonzero (+valid WAV); valid output path; FFmpeg available. Missing audio
+fails clearly, never silent. Composed audio required.
+3. Video: stream copy (-c:v copy) preserving resolution/fps/quality; no
+filters; useful FFmpeg error (not silent surprises) if copy is incompatible.
+4. Audio: composed PCM WAV -> AAC (-c:a aac, -b:a 192k or adjusted); source
+WAV untouched; final = video + AAC audio.
+5. Duration: composed audio already matches video (PLAN 12); no extension,
+no trailing silence, no stretch; final ~= source duration. Prefer no
+-shortest-style truncation unless safe (document the choice).
+6. Output: output/ (created), unique output/final_<request_id>.mp4, no blind
+overwrites, request/batch-style unique IDs.
+7. GUI: existing Generate Final MP4 button does the real export -- requires
+video + composed audio, background worker, responsive Tkinter, disabled while
+exporting, status, re-enable, clear success/failure. Worker/queue/root.after.
+8. Button enabled only with video + valid composed audio; otherwise no FFmpeg
+start + clear missing-input status. No manual path inspection needed.
+9. Unique request ID per export (mp4_export_<random> style) with [MP4 EXPORT]
+logs; stale results ignored, never overwriting current state.
+10. Safe argv (no shell=True); captured returncode/stdout/stderr; command ~=
+ffmpeg -y -i video -i audio -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 192k
+output.mp4 (adjust only for reliability; no manual shell quoting).
+11. Explicit mapping: video from input 0, audio from input 1; composed voice
+is THE final audio (replaces original); no accidental extra tracks, no mixing
+with original audio.
+12. Post-validation: output exists/real/nonzero or export fails; ffprobe check
+(container, video+audio streams, AAC codec, reasonable duration) when
+available, limitation recorded otherwise.
+13. Minimal state: final_mp4_path/request_id (+duration); invalidated on video
+reload, SRT reload, text/timing edit, drag, voice regen, composed regen/
+invalidation (reuse PLAN 11 invalidation; no complex dependency system).
+14. Statuses: Validating/Exporting/FFmpeg muxing/complete; success shows path;
+failure shows reason; no fake progress (real parsing only if easy).
+15. Logs: [MP4 EXPORT] request_id/input_video/input_audio/output/
+ffmpeg_returncode/output_exists/output_size (+stderr tail on failure); no
+binary dumps.
+16. Tests (no GUI): missing video/audio/output, unique output, command tokens
+(video+audio inputs, both maps, copy, AAC), source untouched, state +
+invalidation (composed change, subtitle change), failure reporting, success
+validation; real integration (tiny test video + WAV -> streams/AAC/duration)
+iff FFmpeg exists. Never claim unrun passes.
+17. PLAN 12 compatibility: composition untouched (timing/gaps/mixing/duration/
+PCM); PLAN 13 only consumes its WAV.
+18. Preserve everything (video/SRT/playback/timeline/selection/editing/
+discovery/preview/batch/cancel/mapping/compose/threading). No refactors.
+19. PLAN 13 ONLY: no save/load, cleanup, per-subtitle voices, waveform,
+timing automation, effects, subtitle burn-in, re-encode features.
+20. NO subtitle burn-in: MP4 = original video + voice audio; text stays an
+editing source.
+21. Verification incl. GUI/real-export/stream/duration/untouched-source/
+PLAN 10-12 regression honesty; spawn EFTYPE recorded exactly if blocking.
+Logs: plan/plan13require.txt (this file), plan/plan13result.txt. STOP after.
