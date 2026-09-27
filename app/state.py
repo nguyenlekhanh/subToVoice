@@ -24,6 +24,12 @@ class AppState:
         self.is_paused = False
         self.current_time_ms = 0
 
+        # PLAN 11 batch voice generation (for PLAN 12 composition).
+        self.subtitle_audio_paths = {}  # subtitle index -> generated WAV path
+        self.subtitle_audio_errors = {}  # subtitle index -> error message
+        self.audio_voice_name = None  # voice used for the stored WAVs
+        self.audio_batch_id = None  # batch that produced the stored WAVs
+
     def clear_video_state(self):
         """Clear video-related state"""
         self.video_path = None
@@ -40,3 +46,19 @@ class AppState:
         self.is_playing = False
         self.is_paused = False
         self.current_time_ms = 0
+
+    def clear_audio_mappings(self):
+        """Forget all batch-generated WAV mappings (e.g. new SRT loaded)."""
+        self.subtitle_audio_paths = {}
+        self.subtitle_audio_errors = {}
+        self.audio_voice_name = None
+        self.audio_batch_id = None
+
+    def invalidate_subtitle_audio(self, subtitle_index):
+        """Drop the generated WAV mapping for one edited subtitle.
+
+        Generated audio must never silently count as valid after its
+        subtitle's text or timing changed.
+        """
+        self.subtitle_audio_paths.pop(subtitle_index, None)
+        self.subtitle_audio_errors.pop(subtitle_index, None)

@@ -420,3 +420,96 @@ def wav_info(wav_path: PathLike) -> dict:
         "frames": frames,
         "duration_s": round(duration_s, 3),
     }
+
+
+def batch_output_path(output_dir: PathLike, subtitle_index: int, batch_id: str) -> Path:
+    """Unique WAV path for one subtitle in a batch (never a fixed filename)."""
+    return Path(output_dir) / f"subtitle_{subtitle_index:04d}_{batch_id}.wav"
+
+
+def generate_batch_voices(
+    work_items,
+    output_dir: PathLike,
+    batch_id: str,
+    voice: PiperVoice,
+    *,
+    piper_cmd: Sequence[str] | None = None,
+    speaker: Optional[int] = None,
+    timeout: int = 120,
+    espeak_voice: Optional[str] = None,
+    cancel_event=None,
+    progress_callback=None,
+) -> tuple:
+    """Generate one WAV per subtitle; GUI-independent batch worker core.
+
+    Args:
+        work_items: iterable of (subtitle_index, subtitle_text) using the
+            EXACT model text (already cleaned by the caller if needed).
+        output_dir: directory receiving subtitle_IIII_<batch_id>.wav files.
+        batch_id: unique id for this batch run.
+        voice: the single selected PiperVoice for the whole batch.
+        cancel_event: optional threading.Event; checked before each item.
+        progress_callback: optional callable
+            (batch_id, done, total, subtitle_index, ok, detail).
+
+    Returns:
+        (success_map, errors): {index: wav_path}, {index: error message}.
+        One failing subtitle never stops the remaining ones.
+    """
+    if voice is None or not isinstance(voice, PiperVoice):
+        raise PiperSynthesisError("No Piper voice selected.")
+    items = list(work_items)
+    total = len(items)
+    out_dir = Path(output_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PiperSynthesisError(f"Cannot create output directory: {exc}") from exc
+
+    success_map: dict = {}
+    errors: dict = {}
+    for position, (subtitle_index, subtitle_text) in enumerate(items, start=1):
+        if cancel_event is not None and cancel_event.is_set():
+            print(f"[VOICE BATCH] batch_request_id={batch_id} cancelled "
+                  f"after {position - 1}/{total}")
+            break
+        output_path = batch_output_path(out_dir, subtitle_index, batch_id)
+        print("[VOICE BATCH]")
+        print(f"batch_request_id={batch_id}")
+        print(f"subtitle_index={subtitle_index}")
+        print(f"text={subtitle_text!r}")
+        print(f"voice={voice.name}")
+        print(f"output_wav={output_path}")
+        if not isinstance(subtitle_text, str) or not subtitle_text.strip():
+            errors[subtitle_index] = "Subtitle text is empty."
+            print(f"[VOICE BATCH] subtitle_index={subtitle_index} "
+                  f"return=skipped-empty wav_exists=False wav_size=0")
+            if progress_callback is not None:
+                progress_callback(batch_id, position, total, subtitle_index,
+                                  False, "empty text")
+            continue
+        try:
+            synthesize(
+                subtitle_text, voice, output_path,
+                piper_cmd=piper_cmd, speaker=speaker, timeout=timeout,
+                espeak_voice=espeak_voice, request_id=f"{batch_id}#{subtitle_index}",
+            )
+            info = wav_info(output_path)
+            if info["frames"] <= 0:
+                raise PiperSynthesisError("Generated WAV has no audio frames.")
+            success_map[subtitle_index] = str(output_path)
+            print(f"[VOICE BATCH] subtitle_index={subtitle_index} return=ok "
+                  f"wav_exists=True wav_size={info['size']} "
+                  f"duration={info['duration_s']}s sha256={info['sha256'][:16]}")
+            if progress_callback is not None:
+                progress_callback(batch_id, position, total, subtitle_index,
+                                  True, f"{info['duration_s']}s")
+        except Exception as exc:
+            errors[subtitle_index] = str(exc)
+            print(f"[VOICE BATCH] subtitle_index={subtitle_index} "
+                  f"return=failed wav_exists={output_path.is_file()} wav_size=0 "
+                  f"error={exc}")
+            if progress_callback is not None:
+                progress_callback(batch_id, position, total, subtitle_index,
+                                  False, str(exc))
+    return success_map, errors

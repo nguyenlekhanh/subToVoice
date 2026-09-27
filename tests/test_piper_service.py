@@ -15,8 +15,10 @@ from services.piper_service import (
     PiperSynthesisError,
     PiperVoice,
     VoicePreviewResult,
+    batch_output_path,
     discover_voices,
     espeak_voice_from_config,
+    generate_batch_voices,
     resolve_espeak_voice,
     resolve_piper_base_command,
     synthesize,
@@ -410,6 +412,164 @@ class VoicePreviewResultTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.output_wav, "")
         self.assertEqual(result.error, "boom")
+
+
+def write_selective_fake_exe(path, fail_marker=b"FAILME"):
+    """Fake Piper runtime that fails when stdin contains the marker."""
+    path.write_text(
+        "import json, sys, wave\n"
+        "from pathlib import Path\n"
+        "argv = sys.argv[1:]\n"
+        "data = sys.stdin.buffer.read()\n"
+        f"if {fail_marker!r} in data:\n"
+        "    sys.stderr.write('selective failure')\n"
+        "    sys.exit(2)\n"
+        "out = None\n"
+        "for i, a in enumerate(argv):\n"
+        "    if a in ('--output_file', '--output-file') and i + 1 < len(argv):\n"
+        "        out = argv[i + 1]\n"
+        "with wave.open(out, 'wb') as wav:\n"
+        "    wav.setnchannels(1)\n"
+        "    wav.setsampwidth(2)\n"
+        "    wav.setframerate(22050)\n"
+        "    wav.writeframes(b'\\x00\\x00' * 2205)\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+class BatchOutputPathTest(unittest.TestCase):
+    def test_paths_are_unique_per_subtitle_and_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "voices"
+            first = batch_output_path(out_dir, 1, "batchAAA")
+            self.assertEqual(first.parent, out_dir)
+            self.assertIn("0001", first.name)
+            self.assertIn("batchAAA", first.name)
+            self.assertTrue(first.suffix == ".wav")
+            paths = {batch_output_path(out_dir, i, "batchAAA") for i in (1, 2, 3)}
+            self.assertEqual(len(paths), 3)
+            again = batch_output_path(out_dir, 1, "batchBBB")
+            self.assertNotEqual(first, again)
+
+
+class GenerateBatchVoicesTest(unittest.TestCase):
+    def test_empty_work_list_gives_empty_maps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_exe = write_selective_fake_exe(tmp_path / "fake.py")
+            success, errors = generate_batch_voices(
+                [], tmp_path / "voices", "b1", make_voice(tmp),
+                piper_cmd=[sys.executable, str(fake_exe)],
+            )
+            self.assertEqual(success, {})
+            self.assertEqual(errors, {})
+
+    def test_one_subtitle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_exe = write_selective_fake_exe(tmp_path / "fake.py")
+            success, errors = generate_batch_voices(
+                [(1, TEXT_A)], tmp_path / "voices", "b2", make_voice(tmp),
+                piper_cmd=[sys.executable, str(fake_exe)],
+            )
+            self.assertEqual(errors, {})
+            self.assertIn(1, success)
+            self.assertTrue(Path(success[1]).is_file())
+
+    def test_multiple_multiline_vietnamese_subtitles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_exe = tmp_path / "fake.py"
+            stdin_log = tmp_path / "stdin.log"
+            fake_exe.write_text(
+                "import sys, wave\n"
+                "from pathlib import Path\n"
+                "data = sys.stdin.buffer.read()\n"
+                f"with open({str(stdin_log)!r}, 'ab') as handle:\n"
+                "    handle.write(str(len(data)).encode() + b'\\n' + data + b'\\n')\n"
+                "argv = sys.argv[1:]\n"
+                "out = argv[argv.index('--output_file') + 1]\n"
+                "with wave.open(out, 'wb') as wav:\n"
+                "    wav.setnchannels(1)\n"
+                "    wav.setsampwidth(2)\n"
+                "    wav.setframerate(22050)\n"
+                "    wav.writeframes(b'\\x00\\x00' * 2205)\n",
+                encoding="utf-8",
+            )
+            voice = make_voice(tmp)
+            items = [(1, TEXT_A), (2, "Dòng một\nDòng hai"), (3, TEXT_B)]
+            progress_calls = []
+            success, errors = generate_batch_voices(
+                items, tmp_path / "voices", "b3", voice,
+                piper_cmd=[sys.executable, str(fake_exe)],
+                progress_callback=lambda *a: progress_calls.append(a),
+            )
+            self.assertEqual(errors, {})
+            self.assertEqual(set(success), {1, 2, 3})
+            self.assertEqual(len({success[i] for i in success}), 3)
+            # Multiline newline preserved exactly in the recorded stdin.
+            logged = stdin_log.read_bytes()
+            self.assertIn("Dòng một\nDòng hai".encode("utf-8"), logged)
+            self.assertIn(TEXT_A.encode("utf-8"), logged)
+            self.assertEqual(len(progress_calls), 3)
+            self.assertEqual(progress_calls[0][:4], ("b3", 1, 3, 1))
+            self.assertTrue(all(call[4] for call in progress_calls))
+
+    def test_one_failure_does_not_stop_the_rest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_exe = write_selective_fake_exe(tmp_path / "fake.py")
+            success, errors = generate_batch_voices(
+                [(1, TEXT_A), (2, "this will FAILME badly"), (3, TEXT_B)],
+                tmp_path / "voices", "b4", make_voice(tmp),
+                piper_cmd=[sys.executable, str(fake_exe)],
+            )
+            self.assertEqual(set(success), {1, 3})
+            self.assertIn(2, errors)
+            self.assertTrue(errors[2])
+
+    def test_no_voice_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(PiperSynthesisError):
+                generate_batch_voices(
+                    [(1, TEXT_A)], Path(tmp) / "voices", "b5", None,
+                    piper_cmd=["__missing__"],
+                )
+
+    def test_precancelled_event_generates_nothing(self):
+        import threading as _threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_exe = write_selective_fake_exe(tmp_path / "fake.py")
+            event = _threading.Event()
+            event.set()
+            success, errors = generate_batch_voices(
+                [(1, TEXT_A), (2, TEXT_B)], tmp_path / "voices", "b6",
+                make_voice(tmp),
+                piper_cmd=[sys.executable, str(fake_exe)],
+                cancel_event=event,
+            )
+            self.assertEqual(success, {})
+            self.assertEqual(errors, {})
+
+
+class BatchAppStateTest(unittest.TestCase):
+    def test_mapping_and_invalidation(self):
+        from app.state import AppState
+
+        state = AppState()
+        state.subtitle_audio_paths = {1: "a.wav", 2: "b.wav"}
+        state.subtitle_audio_errors = {3: "boom"}
+        state.invalidate_subtitle_audio(1)
+        self.assertEqual(state.subtitle_audio_paths, {2: "b.wav"})
+        self.assertIn(3, state.subtitle_audio_errors)
+        state.clear_audio_mappings()
+        self.assertEqual(state.subtitle_audio_paths, {})
+        self.assertEqual(state.subtitle_audio_errors, {})
+        self.assertIsNone(state.audio_voice_name)
+        self.assertIsNone(state.audio_batch_id)
 
 
 if __name__ == "__main__":

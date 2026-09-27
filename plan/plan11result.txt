@@ -1,0 +1,71 @@
+PLAN 11 RESULT (batch voice generation)
+
+1. Date
+2026-09-27
+
+2. Status
+PARTIAL (code complete; no runtime verification possible here).
+
+3. What was implemented
+- app/state.py (minimal extension): subtitle_audio_paths {index: wav},
+  subtitle_audio_errors {index: error}, audio_voice_name, audio_batch_id;
+  clear_audio_mappings() and invalidate_subtitle_audio(index) helpers.
+- services/piper_service.py (PLAN 10 synthesize reused unchanged):
+  batch_output_path() -> temp/voices/subtitle_IIII_<batch_id>.wav (unique,
+  never fixed names); generate_batch_voices() -- GUI-independent batch core
+  taking (index, exact-text) items, one synthesize + wav_info validation
+  (exists, size>0, readable header, frames>0; short files accepted, audio
+  never trimmed/normalized/resampled) per item, per-item try/except so one
+  failure records {index: error} and the rest continue, cancel_event checked
+  between items, progress_callback(batch_id, done, total, index, ok, detail),
+  returns (success_map, errors); [VOICE BATCH] logs with full text repr().
+- app/ui.py (existing logic untouched except additive hooks): "Generate All
+  Voices" + "Cancel" buttons and determinate progress bar in the Piper Voice
+  area; _on_generate_all_voices captures an immutable work list from the
+  MODEL (index, cleaned exact text, start/end ms -- never Treeview display
+  strings, never " | " reversal) plus the selected voice, mints batch_id,
+  disables UI, starts the worker; _batch_worker calls generate_batch_voices
+  (no widget access) and queues progress/done items; _check_batch_result
+  drains the queue on the main thread, drops stale batch ids with a log line,
+  updates "Generating voices i/N... (subtitle #k)" + progress bar, and on
+  done writes the mapping/errors/voice/batch into AppState with the final
+  "Voice generation complete: X/Y succeeded, Z failed.( cancelled)" status;
+  _on_cancel_batch sets the event (current Piper finishes safely, succeeded
+  mappings kept); _update_batch_button_state (disabled without subtitles or
+  voice, or while running). Preview Voice path byte-identical to PLAN 10.
+- Invalidation hooks (one-liners): SRT reload success clears mappings;
+  Treeview text/timing edit success invalidates that subtitle; timeline drag
+  commit invalidates that subtitle. Stale audio can never silently count.
+- Re-clicking Generate All Voices mints a new batch_id -> fresh unique WAVs,
+  mapping replaced wholesale with the newest files.
+
+4. Batch workflow
+UI capture -> worker thread -> per-subtitle synthesize/verify (temp/voices/)
+-> queue progress+result -> root.after() -> UI updates -> state mapping.
+Tkinter only on the main thread.
+
+5. State changes
+As in section 3; mapping persists after completion for PLAN 12.
+
+6. Tests actually executed
+- NONE. `python -m py_compile app/state.py` / `app/ui.py` /
+  `services/piper_service.py`: all blocked (spawn EFTYPE). Unit tests,
+  `python main.py`, real-Piper runs: not attempted (same blocked path).
+- Tests WRITTEN (not run): BatchOutputPathTest (format/uniqueness);
+  GenerateBatchVoicesTest with a controllable fake runtime -- empty list,
+  one subtitle, 3 subtitles incl. multiline + Vietnamese exact-stdin capture
+  + progress-callback shape, selective-failure item not stopping the rest,
+  None voice rejected, pre-set cancel generating nothing; BatchAppStateTest
+  (mapping + invalidation + clearing).
+
+7. Manual verification
+- None by agent. For the user: load SRT -> select voice -> Generate All
+  Voices -> watch i/N statuses + progress bar -> completion counts ->
+  temp/voices/ holds subtitle_IIII_<batch>.wav per subtitle -> edit one
+  subtitle -> its mapping gone -> regenerate -> new batch files; cancel
+  mid-run keeps finished WAVs; Preview Voice still works unchanged.
+
+8. Failures / environment limitations
+- All Python/shell execution returns `spawn EFTYPE` with no output; no
+  compile, test, GUI, synthesis, or listening check was possible. Nothing is
+  claimed as passing or verified.

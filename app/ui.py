@@ -13,7 +13,13 @@ import wave
 from pathlib import Path
 
 from app.state import AppState
-from services.piper_service import PiperService, VoicePreviewResult, wav_info
+from services.piper_service import (
+    PiperService,
+    VoicePreviewResult,
+    batch_output_path,
+    generate_batch_voices,
+    wav_info,
+)
 from services.srt_service import SRTService, SRTParseError
 from services.video_service import VideoService, VideoLoadError
 
@@ -35,6 +41,15 @@ class VideoVoiceEditorApp:
         self._preview_generating = False
         self._preview_request_id = None
         self.btn_preview_voice = None
+        # PLAN 11 batch voice generation state
+        self._batch_thread = None
+        self._batch_result_queue = queue.Queue()
+        self._batch_generating = False
+        self._batch_request_id = None
+        self._batch_cancel_event = None
+        self.btn_generate_all = None
+        self.btn_cancel_batch = None
+        self.batch_progress = None
         self._srt_load_thread = None
         self._srt_result_queue = queue.Queue()
         self._batch_insert_index = 0
@@ -834,6 +849,7 @@ class VideoVoiceEditorApp:
             if new_start_ms >= 0 and new_end_ms > new_start_ms:
                 self._drag_subtitle.start_ms = new_start_ms
                 self._drag_subtitle.end_ms = new_end_ms
+                self.state.invalidate_subtitle_audio(self._drag_subtitle.index)
                 self._rebuild_timeline()
                 # Update Treeview
                 for item in self.subtitle_tree.get_children():
@@ -945,6 +961,24 @@ class VideoVoiceEditorApp:
             command=self._on_preview_voice,
         )
         self.btn_preview_voice.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self.btn_generate_all = ttk.Button(
+            frame,
+            text="Generate All Voices",
+            command=self._on_generate_all_voices,
+            state=tk.DISABLED,
+        )
+        self.btn_generate_all.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self.btn_cancel_batch = ttk.Button(
+            frame,
+            text="Cancel",
+            command=self._on_cancel_batch,
+            state=tk.DISABLED,
+        )
+        self.btn_cancel_batch.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self.batch_progress = ttk.Progressbar(
+            frame, orient=tk.HORIZONTAL, mode="determinate"
+        )
+        self.batch_progress.pack(fill=tk.X, padx=10, pady=(0, 5))
         self._start_piper_discovery()
 
     def _start_piper_discovery(self):
@@ -983,6 +1017,7 @@ class VideoVoiceEditorApp:
             self.voice_var.set("No Piper voices found")
             self._update_status(f"Piper voice discovery failed: {payload}")
             self._update_preview_button_state()
+            self._update_batch_button_state()
             return
 
         self._piper_voices = list(payload)
@@ -992,6 +1027,7 @@ class VideoVoiceEditorApp:
             self.voice_var.set("No Piper voices found")
             self._update_status("No Piper voices found")
             self._update_preview_button_state()
+            self._update_batch_button_state()
             return
 
         names = [voice.name for voice in self._piper_voices]
@@ -1004,6 +1040,7 @@ class VideoVoiceEditorApp:
         self.state.selected_voice = self._piper_voices[0]
         self._update_status(f"Discovered {len(self._piper_voices)} Piper voices")
         self._update_preview_button_state()
+        self._update_batch_button_state()
 
     def _on_voice_selected(self, event=None):
         """Store the user-selected Piper voice object."""
@@ -1011,6 +1048,7 @@ class VideoVoiceEditorApp:
         if 0 <= index < len(self._piper_voices):
             self.state.selected_voice = self._piper_voices[index]
         self._update_preview_button_state()
+        self._update_batch_button_state()
 
     @staticmethod
     def _clean_preview_text(raw_text: str) -> str:
@@ -1238,6 +1276,141 @@ class VideoVoiceEditorApp:
                 )
 
         threading.Thread(target=_play, daemon=True).start()
+
+    def _update_batch_button_state(self):
+        """Enable Generate All Voices only when subtitles + voice are ready."""
+        if self.btn_generate_all is None:
+            return
+        if self._batch_generating:
+            self.btn_generate_all.config(state=tk.DISABLED)
+            if self.btn_cancel_batch is not None:
+                self.btn_cancel_batch.config(state=tk.NORMAL)
+            return
+        ready = bool(self.state.subtitles) and self.state.selected_voice is not None
+        self.btn_generate_all.config(state=tk.NORMAL if ready else tk.DISABLED)
+        if self.btn_cancel_batch is not None:
+            self.btn_cancel_batch.config(state=tk.DISABLED)
+
+    def _on_generate_all_voices(self):
+        """Capture the full subtitle work list and start the batch worker."""
+        if self._batch_generating:
+            return
+        voice = self.state.selected_voice
+        if voice is None:
+            self._update_status("Please select a Piper voice first.")
+            messagebox.showinfo("Generate All Voices", "Please select a Piper voice first.")
+            return
+        if not self.state.subtitles:
+            self._update_status("No subtitles loaded.")
+            messagebox.showinfo("Generate All Voices", "Please load an SRT file first.")
+            return
+
+        # Immutable work list from the MODEL (never Treeview display strings,
+        # never " | " joined text); the worker only sees these captured values.
+        work_items = []
+        for sub in self.state.subtitles:
+            raw = sub.text if isinstance(sub.text, str) else ""
+            work_items.append((
+                sub.index,
+                self._clean_preview_text(raw),
+                sub.start_ms,
+                sub.end_ms,
+            ))
+
+        batch_id = uuid.uuid4().hex[:8]
+        self._batch_request_id = batch_id
+        self._batch_cancel_event = threading.Event()
+        self._batch_generating = True
+        self._update_batch_button_state()
+        if self.batch_progress is not None:
+            self.batch_progress.config(maximum=len(work_items), value=0)
+        self._update_status(f"Generating voices 1/{len(work_items)}...")
+
+        self._batch_thread = threading.Thread(
+            target=self._batch_worker,
+            args=(batch_id, work_items, voice),
+            daemon=True,
+        )
+        self._batch_thread.start()
+        self.root.after(100, lambda _bid=batch_id: self._check_batch_result(_bid))
+
+    def _on_cancel_batch(self):
+        """Stop starting new synthesis jobs; keep what already succeeded."""
+        if self._batch_cancel_event is not None:
+            self._batch_cancel_event.set()
+        self._update_status("Cancelling voice generation...")
+
+    def _batch_worker(self, batch_id: str, work_items, voice):
+        """Run the batch off the Tkinter main thread (no widget access)."""
+        texts = [(index, text) for index, text, _, _ in work_items]
+        project_root = Path(__file__).resolve().parent.parent
+        output_dir = project_root / "temp" / "voices"
+
+        def _progress(bid, done, total, index, ok, detail):
+            self._batch_result_queue.put(
+                ("progress", bid, done, total, index, ok, detail)
+            )
+
+        try:
+            success_map, errors = generate_batch_voices(
+                texts, output_dir, batch_id, voice,
+                cancel_event=self._batch_cancel_event,
+                progress_callback=_progress,
+            )
+            cancelled = (self._batch_cancel_event is not None
+                         and self._batch_cancel_event.is_set())
+            self._batch_result_queue.put(
+                ("done", batch_id, success_map, errors, cancelled)
+            )
+        except Exception as exc:
+            self._batch_result_queue.put(
+                ("failed", batch_id, {}, {0: str(exc)}, False)
+            )
+
+    def _check_batch_result(self, batch_id=None):
+        """Consume batch progress/results on the Tkinter main thread."""
+        try:
+            while True:
+                item = self._batch_result_queue.get_nowait()
+                kind = item[0]
+                if batch_id is not None and item[1] != batch_id:
+                    print(f"[VOICE BATCH] ignoring stale result batch_request_id={item[1]}")
+                    continue
+                if kind == "progress":
+                    _, _, done, total, index, ok, _ = item
+                    self._update_status(
+                        f"Generating voices {done}/{total}... (subtitle #{index})"
+                    )
+                    if self.batch_progress is not None:
+                        self.batch_progress.config(value=done)
+                elif kind in ("done", "failed"):
+                    _, _, success_map, errors, cancelled = item
+                    self.state.subtitle_audio_paths = dict(success_map)
+                    self.state.subtitle_audio_errors = dict(errors)
+                    self.state.audio_batch_id = batch_id
+                    self.state.audio_voice_name = getattr(
+                        self.state.selected_voice, "name", None
+                    )
+                    total = len(success_map) + len(errors)
+                    note = " (cancelled)" if cancelled else ""
+                    self._update_status(
+                        f"Voice generation complete: {len(success_map)}/{total} "
+                        f"succeeded, {len(errors)} failed.{note}"
+                    )
+                    print("[VOICE BATCH]")
+                    print(f"success={len(success_map)}")
+                    print(f"failed={len(errors)}")
+                    print(f"total={total}")
+                    if errors:
+                        print(f"failed_indexes={sorted(errors)}")
+                    self._batch_generating = False
+                    if self.batch_progress is not None:
+                        self.batch_progress.config(value=len(success_map))
+                    self._update_batch_button_state()
+        except queue.Empty:
+            pass
+        if self._batch_generating:
+            self.root.after(100, lambda _bid=batch_id: self._check_batch_result(_bid))
 
     def _create_status_bar(self, parent):
         """Create status bar at bottom"""
@@ -1881,11 +2054,13 @@ class VideoVoiceEditorApp:
             _, file_path, subtitles = result
             self.state.srt_path = file_path
             self.state.subtitles = subtitles
+            self.state.clear_audio_mappings()
             self._batch_insert_subtitles = subtitles
             self._batch_insert_index = 0
             self._insert_batch()
             # Rebuild timeline to show subtitle blocks
             self._rebuild_timeline()
+            self._update_batch_button_state()
         else:
             _, error_msg = result
             self._update_status(f"Failed to load SRT: {error_msg}")
@@ -2112,6 +2287,8 @@ class VideoVoiceEditorApp:
                 self.subtitle_tree.set(item, "end", self._format_timestamp_display(new_end_ms))
                 self._update_subtitle_block_position(subtitle)
             
+            # Generated audio for this subtitle is stale after any edit.
+            self.state.invalidate_subtitle_audio(subtitle.index)
             # Update timeline block
             self._rebuild_timeline()
             self._update_status(f"Updated {col_name} for subtitle {subtitle.index}")

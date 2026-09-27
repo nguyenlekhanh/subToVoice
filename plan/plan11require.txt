@@ -1,0 +1,76 @@
+PLAN 11 REQUIREMENTS
+
+Plan Number: 11
+Plan Name: Generate All Voices (batch TTS)
+
+Baseline: working PLAN 10 Preview Voice code. Reuse its Piper synthesis
+service; do NOT rewrite/replace it. PLAN 1-10 features stay intact.
+
+Goal: batch voice generation for ALL currently loaded subtitles. Workflow:
+Load video -> Load SRT -> select Piper voice -> "Generate All Voices" -> one
+WAV per subtitle, mapping stored in application state for PLAN 12. This plan
+ONLY generates WAVs: no audio composition, no FFmpeg final audio, no final
+MP4, no project save/load, no global cleanup/error-handling architecture.
+
+Voice: the currently selected PLAN 10/PLAN 9 PiperVoice for every subtitle.
+No second discovery system, no hardcoded names. No voice selected -> clear
+error, no generation.
+
+Subtitle source: the subtitle MODEL (subtitle.text, exact Vietnamese/accents/
+punctuation/multiline/newlines). Never Treeview display strings (no " | "
+reverse-conversion), never Treeview queries from the worker. Capture an
+immutable work list before starting: subtitle index, exact text, start_ms,
+end_ms, selected voice.
+
+Output: temp/voices/, one unique WAV per subtitle
+(subtitle_0001_<unique>.wav style). No fixed names, no overwrites. Mapping
+subtitle_audio_paths[index] = wav_path stored in AppState (existing
+architecture, no new globals).
+
+Batch processing: worker thread -> synthesize+verify each subtitle ->
+queue progress/result -> root.after() -> UI. Tkinter only on main thread;
+responsive GUI.
+
+Progress: "Generating voices 1/25..." ... "Generated 25/25 voices." with
+subtitle index; progress bar if practical without UI redesign.
+
+Errors: one failing subtitle records (index, error) and the batch continues;
+final report "Voice generation complete: 24/25 succeeded, 1 failed."; failures
+kept inspectable for PLAN 12; nothing hidden.
+
+State: minimal AppState extension (index -> WAV, status, optional error for
+PLAN 12); mapping survives completion; editing a subtitle's text/timing
+invalidates its mapping (no silent stale validity); no elaborate cache.
+
+Regenerate: fresh unique WAVs on re-click, mapping updated to newest files,
+never reuse/overwrite another request's files.
+
+Button "Generate All Voices" near Preview Voice: disabled without subtitles,
+without voice, or while running; re-enabled after finish/fail. Preview Voice
+keeps working exactly as before.
+
+Cancel: simple cancel action only if cheap (stop new jobs, let current Piper
+finish safely, keep succeeded mappings, GUI control back). No over-engineering.
+
+Request IDs: unique batch_request_id per run; stale results from older batches
+ignored, never overwriting current mapping.
+
+Logging: per subtitle [VOICE BATCH] batch_request_id/subtitle_index/text
+repr/voice/output_wav; after: return/exists/size; completion
+success/failed/total. repr(), never truncated-only.
+
+Validation per WAV: exists, size > 0, valid header + readable via wave +
+duration sane where practical. Never reject valid short subtitles; never trim/
+normalize/resample/modify Piper audio.
+
+Tests: empty/one/multiple/multiline/Vietnamese lists, unique paths, mapping,
+failure-doesn't-stop, no-voice, stale handling where practical. Real Piper
+integration only if practical. Never claim unrun passes; record spawn EFTYPE
+honestly.
+
+Files: app/state.py, app/ui.py, services/piper_service.py only if necessary,
+tests/..., plan/plan11require.txt (this file), plan/plan11result.txt. No
+unrelated video/timeline/SRT changes.
+
+Boundaries: PLAN 11 ONLY. No PLAN 12 composition, PLAN 13 MP4, PLAN 14
+save/load, PLAN 15 cleanup. STOP after PLAN 11.
