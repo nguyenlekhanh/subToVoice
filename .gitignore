@@ -5,13 +5,8 @@ dist
 npm-debug.log*
 yarn-error.log*
 
-.output
-.temp
-
-.\output
-.\temp
-
-./output
-./temp
+temp/
+temps/
+output/
 
 opencode.json
