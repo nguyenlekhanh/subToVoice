@@ -1,0 +1,710 @@
+PLAN 17 RESULT LOG (Environment, Compile, Test, and Piper Runtime Verification ONLY)
+Date: 2026-09-27
+Scope: VERIFICATION ONLY. No application source, test, UI, state, Piper, FFmpeg, or
+dependency file was modified. Only plan/plan17require.txt and plan/plan17result.txt
+were created.
+
+================================================================================
+0. HEADLINE RESULT
+================================================================================
+ALL executable verification steps are BLOCKED. The shell/command execution tool in
+this environment fails on every invocation with:
+
+    spawn EFTYPE
+
+This affects plain builtins (echo, Get-Location) as well as every `uv`, `python`,
+`where`, `ffmpeg` and `git` command. Consequently:
+
+  - uv version / Python version / sys.executable   -> NOT RUN
+  - Python compile checks (all 3 groups)           -> NOT RUN
+  - Import checks (all 4)                          -> NOT RUN
+  - Piper runtime verification (manual script)     -> NOT RUN
+  - Application Preview Voice manual test          -> NOT RUN
+  - Piper regression tests (2 classes)             -> NOT RUN
+  - Full unittest suite                            -> NOT RUN
+  - FFmpeg/FFprobe environment checks              -> NOT RUN
+
+Only read-only inspection (read / grep / glob) worked, so all findings below are
+STATIC findings. Nothing is reported as PASS.
+
+================================================================================
+1. PROJECT HISTORY (READ)
+================================================================================
+Read-only review performed of the plan/ history, including:
+  plan/plan1result.txt .. plan/plan9result.txt
+  plan/plan10result.txt .. plan/plan14result.txt
+  plan/plan15require.txt, plan/plan15result.txt
+  plan/plan15fixrequire.txt, plan/plan15fixresult.txt
+  plan/plan15fix2require.txt, plan/plan15fix2result.txt
+  plan/plan15fix3require.txt, plan/plan15fix3result.txt
+  plan/plan16require.txt, plan/plan16result.txt
+
+Consistent history: PLAN 1-16 all recorded as "code complete" with runtime
+verification marked NOT RUN, because no working execution environment existed at
+the time either. PLAN 17 is the first plan explicitly tasked with establishing the
+real runtime state; that goal could NOT be achieved in this environment.
+
+================================================================================
+2. UV ENVIRONMENT VERIFICATION
+================================================================================
+2.1 Project configuration files (static inspection)
+  pyproject.toml        : NOT FOUND
+  uv.lock               : NOT FOUND
+  setup.py / setup.cfg  : NOT FOUND
+  pytest.ini / tox.ini  : NOT FOUND
+  .python-version       : NOT FOUND
+  requirements*.txt     : NOT FOUND
+=> There is NO dependency manifest in the project. The .venv is a bare, uv-created
+   virtual environment. `uv run` has no declared project to resolve, so it can only
+   reuse the existing .venv. Dependencies cannot be reproduced from the repo.
+
+2.2 .venv/pyvenv.cfg (actual file contents)
+  home = C:\Python312
+  implementation = CPython
+  uv = 0.12.3
+  version_info = 3.12.2
+  include-system-site-packages = false
+  prompt = 30_2 subTheoVoice1
+
+  => venv exists, was created by uv 0.12.3, base interpreter C:\Python312
+     (CPython 3.12.2), system site-packages NOT inherited.
+  => "uv version" below is read from the venv metadata, NOT from `uv --version`
+     (that command did not run).
+
+2.3 Installed packages in .venv/Lib/site-packages (static)
+  piper-tts 1.8.0        (dist-info: piper_tts-1.8.0.dist-info)
+  onnxruntime 1.30.0
+  numpy 2.5.3
+  protobuf 7.36.2
+  flatbuffers 25.12.19
+  packaging 26.3
+  pathvalidate 3.3.1
+  pytest                  : NOT INSTALLED
+  => piper-tts 1.8.0 IS present in the project .venv.
+  => pytest is NOT installed, so unittest is the only available runner.
+     No dependency was installed or changed.
+
+2.4 Requested commands
+  uv --version                                                  : NOT RUN (spawn EFTYPE)
+  uv run python --version                                      : NOT RUN (spawn EFTYPE)
+  uv run python -c "import sys; print(sys.executable)"          : NOT RUN (spawn EFTYPE)
+  uv run python -c "import sys; print(sys.version)"             : NOT RUN (spawn EFTYPE)
+  uv run python -m piper --help                                : NOT RUN (spawn EFTYPE)
+  uv run python -m piper --version                             : NOT RUN (spawn EFTYPE)
+  where python                                                  : NOT RUN (spawn EFTYPE)
+  where piper                                                   : NOT RUN (spawn EFTYPE)
+
+  -> Whether a `piper` executable is on PATH, and whether it points outside the
+     project .venv, is UNKNOWN. Not runnable here.
+     Static note: .venv/Scripts/piper.exe exists and is the console-script shim for
+     `piper.__main__:main` (piper_tts-1.8.0.dist-info/entry_points.txt), i.e. the
+     same code as `python -m piper`. If `where piper` resolves to that shim, the
+     PATH and module routes execute IDENTICAL code and cannot differ in output.
+
+================================================================================
+3. PYTHON COMPILE CHECK
+================================================================================
+  uv run python -m py_compile main.py                          : NOT RUN (spawn EFTYPE)
+  uv run python -m py_compile <9 app/service modules>           : NOT RUN (spawn EFTYPE)
+  uv run python -m py_compile <7 test modules>                  : NOT RUN (spawn EFTYPE)
+
+No compile error was observed and no compile success was observed. Nothing to stop
+on, because nothing executed. No file was edited.
+
+STATIC structural observations from reading the sources (not a substitute for
+py_compile):
+  - services/piper_service.py (699 lines) is structurally intact: `class
+    PiperService` at line 43 with `synthesize` as a real indented method at line
+    61, followed by module-level helpers and the single canonical module-level
+    `synthesize` at line 424. The PLAN 15 FIX 3 regression (orphaned
+    `def synthesize(self, ...)`) is absent from the current file.
+  - models/subtitle.py, app/state.py, services/project_service.py,
+    services/cleanup_service.py, services/srt_service.py, services/video_service.py
+    read structurally consistent.
+  - Cosmetic only (not an error): services/piper_service.py line 83 has a single
+    blank line between the end of `class PiperService` and the module-level
+    `def normalize_piper_input` (PEP 8 / flake8 E302 expects two). No behavioural
+    effect. NOT FIXED.
+
+================================================================================
+4. IMPORT CHECK
+================================================================================
+  uv run python -c "from services.piper_service import PiperService, PiperVoice, synthesize; print('PIPER IMPORT OK')"   : NOT RUN (spawn EFTYPE)
+  uv run python -c "import app.ui; print('UI IMPORT OK')"                                                             : NOT RUN (spawn EFTYPE)
+  uv run python -c "import app.state; print('STATE IMPORT OK')"                                                       : NOT RUN (spawn EFTYPE)
+  uv run python -c "import services.ffmpeg_service; print('FFMPEG IMPORT OK')"                                         : NOT RUN (spawn EFTYPE)
+
+STATIC cross-check of the names app/ui.py imports (lines 15-40) against the modules
+that define them:
+  app.state.AppState ................................ present
+  services.piper_service.PiperService ................ present (line 43)
+  services.piper_service.VoicePreviewResult ........... present (line 103)
+  services.piper_service.batch_output_path ............. present (line 577)
+  services.piper_service.generate_batch_voices ......... present (line 582)
+  services.piper_service.resolve_voice_by_name ......... present (line 566)
+  services.piper_service.wav_info ...................... present (line 537)
+  services.ffmpeg_service.FFmpegService ................ present (line 16)
+  services.ffmpeg_service.probe_mp4 .................... present (line 324)
+  services.cleanup_service.cleanup_on_close ........... present (line 137)
+  services.cleanup_service.cleanup_preview_files ....... present (line 60)
+  services.project_service.FORMAT_ID ................... present (line 16)
+  services.project_service.SUPPORTED_VERSION .......... present (line 17)
+  services.project_service.ProjectError ............... present (line 21)
+  services.project_service.load_project ............... present (line 176)
+  services.project_service.resolve_path ............... present (line 48)
+  services.project_service.save_project ............... present (line 146)
+  services.project_service.store_path ................. present (line 29)
+  models.subtitle.Subtitle ............................ present
+  services.srt_service.SRTService / SRTParseError ..... present (lines 16 / 11)
+  services.video_service.VideoService / VideoLoadError  present (lines 32 / 27)
+  SRTService.load_srt is a @classmethod (line 80), so the
+  SRTService.load_srt(file_path) call at app/ui.py:2394 is valid.
+All statically resolvable. This does NOT prove the imports execute (NOT RUN).
+
+================================================================================
+5. PIPER RUNTIME VERIFICATION
+================================================================================
+  uv run python tests/manual_piper_runtime_check.py        : NOT RUN (spawn EFTYPE)
+  Script was NOT modified (read only, 66 lines).
+
+Requested capture items: sys.executable, Python version, piper_module_available,
+piper_executable, piper_command, command_source, piper_version, PATH, model path,
+config path, eSpeak voice, Piper return code, output WAV path/size/duration, SHA256.
+=> ALL UNKNOWN. Nothing was executed, so nothing may be reported.
+
+Static inputs that WOULD have been used (read from disk):
+  config/piper/       : 15 Vietnamese models, all with a non-empty
+                        espeak.voice (14x "vi", 1x "vi-vn-x-south")
+  config/piper-en/    : 2 English models, both espeak.voice = "en-us"
+  The manual script requires a voice named exactly "banmai";
+  config/piper/banmai.onnx and config/piper/banmai.onnx.json both EXIST
+  (banmai.onnx.json line 6: "voice": "vi").
+  => The manual script would not have aborted on a missing model.
+
+--------------------------------------------------------------------------------
+5.1 FINDING A (HIGH IMPACT, STATIC) - the CLI flag the app sends does not exist in
+    the installed Piper, and piper-tts 1.8.0 silently ignores stdin in that case
+--------------------------------------------------------------------------------
+Application code (services/piper_service.py, canonical synthesize, lines 486-490):
+
+    cmd  = list(base_cmd) + ["--model", str(model_path)]
+    cmd += ["--config", str(config_path)]
+    if resolved_espeak_voice:
+        cmd += ["--espeak-voice", resolved_espeak_voice]
+    cmd += ["--output_file", str(output_path)]
+
+Installed Piper (piper-tts 1.8.0) CLI definition,
+.venv/Lib/site-packages/piper/__main__.py:
+  - argparse parser defines: -m/--model (required), -c/--config, -i/--input-file,
+    -f/--output-file/--output_file, -d/--output-dir, --output-dir-naming,
+    --output-raw, -s/--speaker, --length-scale, --noise-scale, --noise-w-scale,
+    --cuda, --sentence-silence, --volume, --no-normalize, --data-dir, --debug.
+  - There is NO `--espeak-voice` option. Grep for "espeak" in that file: no match.
+  - Line 102:  args, unknown_args = parser.parse_known_args()
+  - Lines 117-123:
+        if unknown_args:
+            texts = [" ".join(unknown_args)]
+        else:
+            texts = sys.stdin
+  - Line 125-129: lines() yields each non-blank stripped line of `texts`.
+
+Consequence, derived from the source above:
+  `--espeak-voice` and its value are collected into `unknown_args`, so
+  `texts` becomes the literal string " ".join(["--espeak-voice", "<voice>"]) and
+  `sys.stdin` is NEVER read. The UTF-8 subtitle payload the application carefully
+  builds (stdin_payload, lines 473-484) is delivered on stdin and then discarded by
+  Piper. Piper synthesises the literal text "--espeak-voice <voice>" instead.
+  Because piper still exits 0 and writes a non-empty WAV, the application's own
+  checks (returncode == 0, file exists, size > 0, frames > 0) all report SUCCESS.
+  Audio that is not the subtitle text would be produced and presented as correct,
+  for Preview Voice AND for every item of Generate All Voices.
+
+  Scope: `resolve_espeak_voice()` (line 290) returns espeak.voice from the model
+  config for all 17 discovered voices (see 5. static inputs), so the flag is
+  appended in 100% of real cases with the current code.
+
+  Why the existing tests do not catch it: every test in tests/test_piper_service.py
+  either uses a fake Python script as `piper_cmd` (write_wav_fake_exe) or mocks
+  services.piper_service.subprocess.run. The real piper-tts CLI argument parser is
+  never executed, and no test asserts the exact full argv sent to a real Piper.
+  tests/test_piper_service.py:825-827 asserts only the first three argv entries.
+
+  STATUS: STATIC FINDING, NOT EXECUTED, NOT FIXED. It must be confirmed on a
+  working machine by running tests/manual_piper_runtime_check.py and listening to
+  (or inspecting the SHA256/duration of) the produced WAV, and by running
+  `uv run python -m piper --model <model> --espeak-voice vi --output_file x.wav`
+  with no stdin versus with stdin. This is the most likely mechanical explanation
+  for the "preview audio is wrong" symptom that PLAN 15 FIX 2 was chasing, and it
+  would apply identically to the module route and to the in-project piper.exe, so
+  it is a better candidate explanation than a PATH/module runtime mismatch.
+
+--------------------------------------------------------------------------------
+5.2 FINDING B (STATIC) - `piper_version` will always be "unknown"
+--------------------------------------------------------------------------------
+services/piper_service.py:186-208 probes `list(base_cmd) + ["--version"]` and only
+accepts a version string when returncode == 0. The installed Piper CLI has no
+`--version` flag and `--model` is `required=True`, so argparse exits with status 2
+and the probe result is "unknown". The `[PIPER RUNTIME]` block would therefore
+always report `piper_version=unknown`, which makes the "same version => same
+runtime" comparison in tests/manual_piper_runtime_check.py inconclusive.
+The installed version is known statically instead: piper-tts 1.8.0
+(dist-info METADATA line 3). STATUS: STATIC FINDING, NOT FIXED.
+
+--------------------------------------------------------------------------------
+5.3 FINDING C (MINOR, STATIC) - PATH and command_error are not printed
+--------------------------------------------------------------------------------
+_describe_resolved (lines 222-243) puts "PATH" and "command_error" into the
+returned dict, but the printed `[PIPER RUNTIME]` block emits only 7 lines:
+sys.executable, python_version, piper_module_available, piper_executable,
+piper_command, command_source, piper_version. PATH information is therefore NOT
+visible in the console block, only via the Python return value. PLAN 17 asked to
+capture PATH from the printed block; that is not possible as written.
+STATUS: STATIC FINDING, NOT FIXED.
+
+--------------------------------------------------------------------------------
+5.4 FINDING D (MINOR, STATIC) - log_piper_runtime_once returns a different shape
+--------------------------------------------------------------------------------
+log_piper_runtime_once (lines 258-265) returns the full description dict on the
+first call for a command, but on subsequent calls returns only
+{"piper_command": [...], "cached": True}. No current caller reads the other keys
+(the return value is discarded in synthesize), so there is no live defect, but the
+API is not safe for a caller that assumes a uniform dict. STATUS: STATIC,
+NOT FIXED.
+
+================================================================================
+6. DIRECT PIPER VS APPLICATION RUNTIME (Preview Voice)
+================================================================================
+  uv run python main.py        : NOT RUN (spawn EFTYPE)
+  GUI interaction, SRT load, Preview Voice click, WAV playback,
+  [PIPER RUNTIME] capture     : NOT RUN (spawn EFTYPE)
+
+  whether the application started                       : UNKNOWN (NOT RUN)
+  whether Preview Voice generated a WAV                : UNKNOWN (NOT RUN)
+  whether the WAV played                                 : UNKNOWN (NOT RUN)
+  whether [PIPER RUNTIME] appeared in the console       : UNKNOWN (NOT RUN)
+  manual-vs-app runtime comparison                      : NOT PERFORMED
+
+The application was NOT modified. The Preview Voice call path was verified only by
+reading code:
+  app/ui.py:1222-1258  _on_preview_voice captures subtitle_index, cleaned text and
+                       the resolved voice, mints request_id, starts _preview_worker
+  app/ui.py:1272-1304  _preview_worker calls
+                       self.piper_service.synthesize(text, voice, output_path,
+                                                     request_id=request_id)
+  services/piper_service.py:61-82  PiperService.synthesize delegates to the
+                       canonical module-level synthesize (single code path)
+  app/ui.py:1306-1356  _check_preview_result re-checks size+sha256 of the returned
+                       WAV, then plays exactly that path
+=> Preview Voice and manual_piper_runtime_check.py go through the SAME canonical
+   synthesize(), so the same runtime and the same argv are expected on both paths.
+   Under Finding A both paths are expected to produce the same WRONG audio, so a
+   manual-vs-app comparison would show "runtimes match" and still be wrong.
+   This comparison could not be performed.
+
+================================================================================
+7. PIPER SYNTHESIS REGRESSION TESTS
+================================================================================
+  uv run python -m unittest tests.test_piper_service     : NOT RUN (spawn EFTYPE)
+
+  total / passed / failed / errors / skipped : UNKNOWN - the suite never started.
+  exact failure messages                    : NONE (no test executed)
+
+Test mechanism determination (static):
+  - No pyproject.toml, no pytest.ini, no setup.cfg, no tox.ini anywhere.
+  - pytest is NOT installed in .venv/Lib/site-packages.
+  - tests/test_piper_service.py imports `unittest` and ends with
+    `if __name__ == "__main__": unittest.main()` (line 848-849).
+  => unittest is the project's configured runner. Nothing was installed.
+
+Exact test inventory of tests/test_piper_service.py (849 lines), 12 classes,
+55 test methods identified by static reading:
+
+  PiperServiceTest (line 47) - 9
+    test_valid_pair_is_discovered_with_metadata, test_missing_config_is_ignored,
+    test_missing_model_is_ignored, test_malformed_json_does_not_prevent_valid_voices,
+    test_multiple_voices_are_discovered,
+    test_duplicate_directory_entries_are_not_duplicated,
+    test_missing_optional_metadata_uses_safe_defaults,
+    test_espeak_voice_is_used_when_language_code_is_missing,
+    test_both_config_directories_are_discovered
+  PiperSynthesisValidationTest (line 200) - 6
+    test_empty_text_is_rejected, test_missing_model_is_rejected,
+    test_missing_config_is_rejected, test_invalid_voice_is_rejected,
+    test_missing_runtime_produces_clear_error, test_failed_process_is_reported
+  PiperEspeakVoiceTest (line 253) - 4
+    test_vietnamese_voice_from_model_config,
+    test_english_voice_is_not_forced_to_vietnamese,
+    test_resolve_prefers_model_config, test_empty_base_command_is_rejected
+  PiperExactTextTest (line 285) - 5
+    test_text_a_sent_byte_exact_with_full_repr_log, test_text_b_differs_and_is_exact,
+    test_abc_inputs_all_distinct,
+    test_multiline_text_becomes_one_input_line,
+    test_different_voices_resolve_different_models
+  PiperWavInfoTest (line 373) - 3
+    test_valid_wav_header_is_reported, test_tampered_file_changes_hash,
+    test_non_wav_is_rejected
+  VoicePreviewResultTest (line 411) - 2
+    test_success_carries_exact_playable_path, test_failure_never_points_at_a_wav
+  BatchOutputPathTest (line 455) - 1
+    test_paths_are_unique_per_subtitle_and_batch
+  GenerateBatchVoicesTest (line 470) - 6
+    test_empty_work_list_gives_empty_maps, test_one_subtitle,
+    test_multiple_multiline_vietnamese_subtitles,
+    test_one_failure_does_not_stop_the_rest, test_no_voice_is_rejected,
+    test_precancelled_event_generates_nothing
+  BatchAppStateTest (line 581) - 1
+    test_mapping_and_invalidation
+  PiperInputNormalizationTest (line 598) - 6
+    test_normal_vietnamese_subtitle_unchanged,
+    test_multiline_subtitle_becomes_one_line, test_vietnamese_unicode_intact,
+    test_stdin_payload_has_exactly_one_terminating_newline,
+    test_empty_and_whitespace_only_still_rejected,
+    test_windows_line_endings_and_bom_normalized
+  PiperRuntimeSelectionTest (line 649) - 8
+    test_current_module_preferred_over_path_exe,
+    test_explicit_override_still_wins,
+    test_path_fallback_when_module_unavailable,
+    test_missing_everything_is_a_clear_error,
+    test_describe_is_safe_without_any_runtime,
+    test_version_probe_uses_list_argv_without_shell,
+    test_version_probe_failure_means_unknown,
+    test_explicit_paths_with_spaces_pass_through_intact
+  PiperServiceSynthesizeRegressionTest (line 759) - 4
+    test_method_exists_and_is_callable,
+    test_preview_compatible_call_reaches_implementation,
+    test_method_uses_fix2_runtime_selection,
+    test_method_explicit_override_still_wins
+
+  The PLAN 15 FIX 3 regression is covered by
+  PiperServiceSynthesizeRegressionTest: the method exists at piper_service.py:61 and
+  is confirmed by static reading to delegate to the canonical synthesize. Its four
+  tests all substitute a fake Piper, so they validate the API shape and the
+  FIX 2 command prefix, not real Piper behaviour.
+
+================================================================================
+8. EXISTING TEST SUITE
+================================================================================
+  uv run python -m unittest discover -s tests -v     : NOT RUN (spawn EFTYPE)
+  total / passed / failed / errors / skipped         : UNKNOWN - never started.
+  No test may be reported as passed. No test may be reported as skipped: skipping
+  is decided by the runner, and the runner never ran.
+
+Static suite inventory (16 test files + 1 manual script in tests/):
+
+  unittest-discoverable (real TestCase classes) - 139 test methods total:
+    tests/test_piper_service.py ............  12 classes,  55 tests
+    tests/test_project_service.py ..........   5 classes,  20 tests
+    tests/test_per_subtitle_voice.py .......   5 classes,  18 tests
+    tests/test_ffmpeg_service.py ...........   4 classes,  14 tests
+    tests/test_error_handling.py ...........   2 classes,  13 tests
+    tests/test_cleanup_service.py ..........   4 classes,  11 tests
+    tests/test_ffmpeg_export.py ............   4 classes,   8 tests
+  (Counts are static tallies of `def test_` methods, not execution results.)
+
+  NOT discoverable by `unittest discover` (plain script files: module-level
+  `test_*` functions plus a `run_all_tests()` and `if __name__ == "__main__"`,
+  no `unittest.TestCase` anywhere). They would be silently IGNORED by the discover
+  command and must be executed directly to get any coverage:
+    tests/test_srt_service.py ......... 8 test_* functions
+    tests/test_video_service.py ....... 6
+    tests/test_timeline.py ............ 6
+    tests/test_playback.py ............ 6
+    tests/test_plan3.py ............... 6
+    tests/test_subtitle_timeline.py ... 7
+    tests/test_subtitle_editing.py .... 6
+  This is a test-harness coverage gap, recorded only. NOT FIXED.
+
+  Manual (not a test):
+    tests/manual_piper_runtime_check.py - 66 lines, real Piper, NOT RUN.
+
+  tests/ has no __init__.py. `python -m unittest discover -s tests` still works
+  (discover inserts the start directory on sys.path), and
+  `python -m unittest tests.test_piper_service` works via namespace packages, but
+  neither form was executed, so neither is reported as working.
+
+================================================================================
+9. FFmpeg ENVIRONMENT VERIFICATION
+================================================================================
+  where ffmpeg                                              : NOT RUN (spawn EFTYPE)
+  where ffprobe                                             : NOT RUN (spawn EFTYPE)
+  ffmpeg -version                                          : NOT RUN (spawn EFTYPE)
+  ffprobe -version                                         : NOT RUN (spawn EFTYPE)
+  uv run python -c "from services.ffmpeg_service import find_ffmpeg; print(find_ffmpeg())"
+                                                              : NOT RUN (spawn EFTYPE)
+  FFmpeg available : UNKNOWN
+  FFprobe available: UNKNOWN
+  No FFmpeg was installed.
+
+FINDING E (STATIC, plan-command defect) - the command written in section 9 of
+PLAN 17 cannot work against the current code:
+  `find_ffmpeg` is NOT a module-level function in services/ffmpeg_service.py.
+  It is a method: `def find_ffmpeg(self)` at line 33 of class FFmpegService
+  (line 16). There is no module-level `def find_ffmpeg(...)` anywhere in the file.
+  Therefore `from services.ffmpeg_service import find_ffmpeg` would raise
+  ImportError, and the command would report a false environment failure.
+  The equivalent existing API is `FFmpegService().find_ffmpeg()`.
+  No code was changed. Recorded for the next verification run.
+
+  Static note on real-FFmpeg tests: tests/test_ffmpeg_service.py contains
+  RealFFmpegComposeTest and tests/test_ffmpeg_export.py contains
+  RealFFmpegExportTest. These depend on a working ffmpeg/ffprobe on PATH; their
+  outcome here is UNKNOWN (NOT RUN) and must not be assumed either way.
+
+  Static note: services/ffmpeg_service.py still carries two legacy placeholders,
+  FFmpegService.render_final_video (line 23) and FFmpegService.combine_audio_tracks
+  (line 28), alongside the real compose_subtitle_audio/export_final_mp4. Recorded
+  only, NOT FIXED.
+
+================================================================================
+10. PLAN 16 VOICE ASSIGNMENT - STATIC VERIFICATION
+================================================================================
+All items verified by reading the current code. No code changed.
+
+  Subtitle.voice exists .................................. VERIFIED (models/subtitle.py:14,
+      `voice: str = ""`, field on the dataclass)
+  Voice column exists ..................................... VERIFIED (app/ui.py:940 columns
+      tuple includes "voice"; heading at 953; column width at 959)
+  Per-subtitle voice selection exists ..................... VERIFIED (app/ui.py:2513
+      allows editing "voice"; 2525-2526 dispatches to _start_voice_edit; 2569+ builds
+      a readonly Combobox in the cell, bound to the edit slot at 2601 and its
+      FocusOut to _on_voice_edit_focus_out at 2610)
+  Preview Voice uses the selected subtitle's voice ........ VERIFIED (app/ui.py:1127-1146
+      _resolve_subtitle_voice: subtitle.voice wins, global default only as a warned
+      fallback; used at 1173 by _get_selected_subtitle_for_preview, logged at 1245,
+      passed to _preview_worker at 1254, and the Preview button enablement check at
+      1187-1203 uses the same resolution)
+  Batch generation uses each subtitle's voice ............. VERIFIED (app/ui.py:1413-1422
+      builds an immutable (index, text, start, end, voice_name) tuple list from the
+      MODEL, not the Treeview; 1425-1442 fails fast listing any missing/unknown
+      voice; 1455-1462 passes the captured {voice.name: voice} map; 1476-1477 reduces
+      work items to (index, text, voice_name); services/piper_service.py:626-638
+      resolves each item through voices_by_name)
+  Unknown voices are not silently substituted ............. VERIFIED for all paths that
+      matter. Treeview edit (app/ui.py:2744-2745) raises
+      "Voice '...' is not available." and reverts (2764-2774). Batch fail-fast
+      (1427-1442). generate_batch_voices (piper_service.py:633-636) raises per item
+      and continues, recording an error. The single documented exception is
+      Preview Voice, which by design falls back to the default voice WITH an
+      explicit warning message (app/ui.py:1139-1142) - that is the PLAN 16 design,
+      and it is warned, not silent.
+  Voice change invalidates the correct audio mapping ..... VERIFIED (app/ui.py:2756
+      invalidate_subtitle_audio(subtitle.index); app/state.py:74-82 pops only that
+      index from subtitle_audio_paths and subtitle_audio_errors)
+  Voice change invalidates composed audio ................. VERIFIED (app/state.py:82
+      invalidate_subtitle_audio -> clear_composed_audio)
+  Voice change invalidates final MP4 ...................... VERIFIED (app/state.py:84-89
+      clear_composed_audio -> clear_final_mp4; also state.py:91-95 clears the path,
+      request_id and duration)
+  Project save/load preserves per-subtitle voice .......... VERIFIED (save:
+      app/ui.py:2875 "voice": sub.voice or "". load: app/ui.py:3001
+      voice=entry.get("voice", ""). Resolution: app/ui.py:3026-3042 - empty saved
+      voices are filled from the default, unknown saved names are PRESERVED verbatim
+      and collected in unavailable_voices for warning, never substituted)
+  FocusOut race fix still present ........................ VERIFIED (app/ui.py:2638-2650:
+      _on_voice_edit_focus_out defers 200 ms and then calls
+      _cancel_voice_edit_if_pending, which cancels ONLY while _edit_col_name is still
+      "voice"; an explicit commit clears the slot in _save_treeview_edit at 2661-2675,
+      making the deferred cancel a no-op. _on_treeview_focus_out at 2652 still saves
+      Entry edits after 100 ms.)
+
+================================================================================
+11. STALE RESULT / SHUTDOWN - STATIC CHECK
+================================================================================
+Guard inventory found in app/ui.py (line numbers):
+  shutdown:  self._closing = True at 1741 inside _on_close (1737), re-entry guard at
+             1739; checked at 1060, 1308, 1508, 1656, 1710, 1719, 1730, 1886, 1888,
+             2194, 2343, 2403, 2446, 2451, 2659. _on_close stops playback, sets the
+             batch cancel event, purges winsound, sweeps previews, each step wrapped
+             in its own try/except so one failure cannot block root.destroy() (1764).
+  Preview Voice:  request_id minted at 1240-1241, compared at 1317; mismatched
+             results are re-queued and the poller rescheduled, so a stale preview can
+             never be played. Additionally the WAV is re-hashed before playback
+             (1336-1352) and exactly result.output_wav is played (1355).
+  Batch:    batch_id minted at 1444-1445, stale results dropped at 1515.
+  Compose:  request_id at 1609-1610, stale results dropped at 1662-1663.
+  Export:   request_id at 3186-3187, stale results dropped at 3234-3235.
+  SRT load: success results carry file_path and are filtered against
+             _pending_srt_path (1825, 2381, 2416-2417); perpetual poller 2446-2447.
+  Video load: success results carry metadata.path and are filtered against
+             _pending_video_path (1825/1865-1867); project load re-arms it at 3126.
+  Project load: sets _pending_video_path and starts a guarded video reload (3117-3129).
+
+POTENTIAL ISSUE - NOT FIXED (1): playback results have no staleness guard.
+  app/ui.py:2192-2232 `_check_playback_result` drains the shared
+  `_playback_result_queue` and consumes every "frame", "ended" and "error" item with
+  no session/generation token. `_stop_playback` (2118-2136) only sets
+  `_playback_stop_event` and resets the position to 0; it does NOT drain the queue.
+  Frames already produced by the in-flight worker (worker loop at 2146-2147) can
+  therefore still be applied after a stop, re-drawing the preview and moving the
+  playhead away from the reset 0 position; a late ("ended", ms) item can also invoke
+  _on_playback_ended (2219) and stop a freshly restarted playback. Contrast with
+  Preview/Batch/Compose/Export, which all compare an id.
+
+POTENTIAL ISSUE - NOT FIXED (2): stale SRT/video LOAD FAILURES are not filtered.
+  The success tuples carry the file path, but the error tuples do not:
+    app/ui.py:2396-2399 puts ("error", str(e)) with no file_path
+    app/ui.py:1845-1848 puts ("error", str(e)) with no path
+  `_check_srt_result` (2441-2444) and `_check_video_result` (1880-1883) display the
+  error unconditionally, so a failure from a superseded request can still pop a modal
+  error dialog. Related: `_check_srt_result` re-enables the Load SRT button at 2412
+  as soon as ANY result is consumed, including a discarded stale one.
+
+POTENTIAL ISSUE - NOT FIXED (3): Preview Voice has no project-context guard.
+  VoicePreviewResult (services/piper_service.py:103-122) carries request_id but no
+  project token, and `_check_preview_result` (1306-1356) compares request_id only.
+  `_on_load_project` / `_apply_project_data` (3012+) do not cancel an in-flight
+  preview or bump a project generation counter. A preview that completes after a
+  project load will still be played. (For Preview/Batch/Compose/Export the
+  state-guard argument documented in the PLAN logs does not cover this case, so it
+  is reported here rather than assumed absent.)
+
+================================================================================
+12. MANUAL VERIFICATION SUMMARY
+================================================================================
+
+--- Environment ---
+  uv version (uv --version)         : NOT RUN (spawn EFTYPE)
+  uv version (from .venv metadata)  : 0.12.3 (uv created the venv)
+  Python version (uv run)           : NOT RUN; .venv metadata states 3.12.2
+  Python executable                 : NOT RUN; .venv home states C:\Python312
+  project .venv status              : PRESENT, CPython 3.12.2, system site-packages
+                                     excluded; NOT RUN to confirm it works
+  pyproject.toml / uv.lock          : ABSENT - no dependency manifest exists
+  Piper installation                : piper-tts 1.8.0 present in .venv (static)
+  Piper executable                  : UNKNOWN (`where piper` NOT RUN);
+                                     .venv/Scripts/piper.exe exists and is the same
+                                     `piper.__main__:main` entry point
+  pytest                            : NOT INSTALLED (unittest is the runner)
+  FFmpeg executable                 : UNKNOWN (NOT RUN)
+  FFprobe executable                : UNKNOWN (NOT RUN)
+
+--- Compile ---
+  py_compile main.py                : NOT RUN
+  py_compile 9 app/service modules  : NOT RUN
+  py_compile 7 test modules         : NOT RUN
+  Structural read: no indentation/duplication defect observed; the PLAN 15 FIX 3
+  orphan method is absent. This is NOT a substitute for py_compile.
+
+--- Imports ---
+  piper_service import check        : NOT RUN (names verified statically)
+  app.ui import check               : NOT RUN (all 20 imported names resolve
+                                     statically)
+  app.state import check            : NOT RUN
+  ffmpeg_service import check       : NOT RUN
+
+--- Piper Runtime ---
+  command source / version / executable / model / config / eSpeak voice /
+  WAV output / duration / size / SHA256 : ALL UNKNOWN - NOT RUN.
+  Expected default command_source=module could NOT be confirmed.
+  Static expectation only: is_piper_module_available() (piper_service.py:130-135)
+  uses importlib.util.find_spec("piper"); with piper-tts 1.8.0 in the venv this
+  would yield module, so piper_command would be
+  [<venv python>, "-m", "piper"] and command_source "module". UNVERIFIED.
+  FINDING A: `--espeak-voice` does not exist in piper-tts 1.8.0 and would make
+  Piper ignore stdin. Static, unconfirmed, not fixed.
+  FINDING B: piper_version would be "unknown" (no --version flag).
+  FINDING C: the printed [PIPER RUNTIME] block omits PATH and command_error.
+
+--- Piper Preview ---
+  application started               : NOT RUN
+  Preview Voice generated a WAV     : NOT RUN
+  audio played                      : NOT RUN
+  [PIPER RUNTIME] appeared          : NOT RUN
+  app runtime matched manual runtime: NOT PERFORMED
+  Static: both paths call the same canonical synthesize(), so they are expected to
+  select the same runtime; under FINDING A they would also both produce the same
+  wrong audio.
+
+--- Tests ---
+  Piper regression tests            : NOT RUN (0 executed, 0 passed, 0 failed,
+                                     0 errors, 0 skipped, 0 known-unrun-by-design)
+  Full unittest suite               : NOT RUN (same)
+  Static inventory                  : 139 discoverable tests in 7 files;
+                                     7 legacy script files (45 test_* functions)
+                                     are NOT collected by `unittest discover`
+  Blocked reason                    : spawn EFTYPE on every command
+
+--- FFmpeg ---
+  FFmpeg available                  : UNKNOWN (NOT RUN)
+  FFprobe available                 : UNKNOWN (NOT RUN)
+  find_ffmpeg import                : the PLAN 17 command is invalid - see
+                                     FINDING E; use FFmpegService().find_ffmpeg()
+
+--- PLAN 16 Static Verification ---
+  per-subtitle voice    : VERIFIED   (models/subtitle.py:14)
+  preview voice         : VERIFIED   (app/ui.py:1127-1146, 1222-1258)
+  batch voice           : VERIFIED   (app/ui.py:1413-1462, piper_service 626-638)
+  invalidation          : VERIFIED   (app/state.py:74-95 via app/ui.py:2756)
+  project persistence   : VERIFIED   (app/ui.py:2875, 3001, 3026-3042)
+  FocusOut fix present  : VERIFIED   (app/ui.py:2638-2650)
+  no silent substitution: VERIFIED   (warnings only where documented)
+
+--- Potential Issues (recorded, NOT FIXED) ---
+  A. HIGH - services/piper_service.py:488-489 sends `--espeak-voice`, which
+     piper-tts 1.8.0 does not define. parse_known_args routes it to unknown_args,
+     which makes piper synthesise the literal "--espeak-voice <voice>" and ignore
+     the stdin subtitle, while still exiting 0 and writing a valid WAV that the
+     application reports as success. Affects Preview Voice and all batch items.
+     Unit tests cannot catch it (fake Piper / mocked subprocess).
+  B. MEDIUM - services/piper_service.py:186-208 probes `--version`, unsupported by
+     piper-tts 1.8.0, so piper_version is always "unknown" and the
+     same-version comparison in the manual script is inconclusive.
+  C. LOW - _describe_resolved (222-243) does not print PATH or command_error even
+     though both are in the returned dict.
+  D. LOW - log_piper_runtime_once (258-265) returns a reduced dict on repeat calls
+     ({"piper_command", "cached"}), an inconsistent API shape. No live caller bug.
+  E. LOW - PLAN 17's own command `from services.ffmpeg_service import find_ffmpeg`
+     is invalid: find_ffmpeg is a method (ffmpeg_service.py:33), not a module
+     function. Reporting defect in the plan, not in the app.
+  F. LOW - playback result queue has no session/generation guard and is not drained
+     on stop (app/ui.py:2118-2136 vs 2192-2232).
+  G. LOW - stale SRT/video load FAILURE results carry no path and are shown
+     unconditionally (app/ui.py:1845-1848, 2396-2399, 1880-1883, 2441-2444).
+  H. LOW - Preview Voice has no project-context guard; a preview completing after a
+     project load still plays (services/piper_service.py:103-122, app/ui.py:1306+).
+  I. LOW - 7 legacy script test files (45 test_* functions) are invisible to
+     `unittest discover` and would be silently skipped.
+  J. COSMETIC - services/piper_service.py:83 single blank line before module-level
+     `def normalize_piper_input` (PEP 8 E302). No behavioural effect.
+  K. INFO - no pyproject.toml / uv.lock / requirements file, so the environment is
+     not reproducible from the repository.
+
+================================================================================
+13. COMMANDS ACTUALLY EXECUTED IN THIS SESSION
+================================================================================
+Every shell command attempted, verbatim, with its actual result:
+
+  1. python -c "print('alive')" 2>&1 | head -1        -> spawn EFTYPE
+  2. cd /d "C:\khanh\python\30_2 subTheoVoice1" && uv --version 2>&1 | head -1
+                                                      -> spawn EFTYPE
+  3. uv --version   (workdir = project root)           -> spawn EFTYPE
+  4. Get-Location | Select-Object -ExpandProperty Path  -> spawn EFTYPE
+  5. echo probe                                       -> spawn EFTYPE
+
+No other command could be started. Read-only `read`, `grep` and `glob` operations
+succeeded and are the sole basis for the static findings above. Earlier plan logs
+also record `git status --short; git log --oneline -5` failing with spawn EFTYPE, so
+the git working-tree state remains UNKNOWN and no VCS claim is made here.
+
+================================================================================
+14. STOP CONDITION
+================================================================================
+plan/plan17require.txt and plan/plan17result.txt created. STOPPING here.
+No application code, test, UI, state, Piper, FFmpeg, configuration or dependency was
+modified. No bug was fixed. No PLAN 18 work started.
+
+To finish the verification, re-run this plan on a machine where commands execute:
+  uv --version
+  uv run python --version
+  uv run python -c "import sys; print(sys.executable); print(sys.version)"
+  uv run python -m piper --help
+  where python ; where piper ; where ffmpeg ; where ffprobe
+  ffmpeg -version ; ffprobe -version
+  uv run python -m py_compile <the three groups above>
+  uv run python -c "import app.ui"  (and the three other import checks)
+  uv run python tests/manual_piper_runtime_check.py      <- expect Finding A to show
+  uv run python -m unittest discover -s tests -v
+  uv run python -c "from services.ffmpeg_service import FFmpegService; print(FFmpegService().find_ffmpeg())"
+then `uv run python main.py` for the Preview Voice comparison in section 6.
+Listen to / inspect the WAV: if it speaks the espeak voice id instead of the
+subtitle, Finding A is confirmed.

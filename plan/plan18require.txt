@@ -1,0 +1,133 @@
+PLAN 18 REQUIREMENTS (Fix Piper CLI `--espeak-voice` Invocation ONLY)
+
+Single purpose: fix the Piper CLI invocation if the current implementation passes
+the unsupported argument `--espeak-voice` to Piper, then verify that Piper actually
+synthesizes the subtitle text instead of treating `--espeak-voice vi` as input text.
+
+STRICT SCOPE - do not refactor unrelated code, do not modify UI, subtitle logic,
+voice assignment, batch architecture, FFmpeg, project save/load, cleanup, playback,
+request IDs, shutdown handling, stale-result handling, tests unrelated to Piper,
+runtime selection, Piper model files (.onnx / .onnx.json), dependencies, or the
+Piper environment. Any other issue found must be RECORDED, NOT FIXED, then STOP.
+
+1. READ THE CURRENT PIPER IMPLEMENTATION (inspection only, no change)
+   services/piper_service.py, tests/test_piper_service.py,
+   tests/manual_piper_runtime_check.py. Trace resolve_piper_base_command(),
+   synthesize(), the canonical module-level synthesis function,
+   PiperService.synthesize(), model path, config path, stdin payload, command
+   construction, espeak.voice reading, --espeak-voice handling, --speaker handling,
+   output WAV handling.
+
+2. VERIFY THE PIPER 1.8.0 CLI BEHAVIOUR (do not assume; do not modify the package)
+   2.1 Is `--espeak-voice` a valid CLI argument?
+   2.2 How are unknown CLI arguments handled?
+   2.3 Can unknown arguments become synthesis text?
+   2.4 Is stdin used when unknown arguments are present?
+   2.5 Does the model .onnx.json already contain the eSpeak voice/language?
+
+3. REQUIRED FIX (only if 2.1 confirms it is invalid)
+   Remove ONLY `--espeak-voice <resolved_espeak_voice>` from the Piper command.
+   Keep the code that reads the eSpeak voice from the model config if it is still
+   used for diagnostics or validation. Do not modify model path, config path, stdin
+   text, Unicode handling, newline normalization, output path, timeout, subprocess
+   handling, return-code handling, WAV validation, runtime selection, voice
+   discovery, per-subtitle voice selection, batch generation, or Preview Voice.
+   Resulting command must be:
+     [piper runtime] --model <model> --config <config> --output_file <output.wav>
+   plus `--speaker <speaker>` only when the model is multi-speaker and the current
+   implementation requires it. The subtitle text MUST continue to be supplied through
+   stdin as (normalized_text + "\n").encode("utf-8"). The text must not change.
+
+4. DO NOT "FIX" THE WRONG THING
+   Do not replace stdin with positional text; do not change stdin_payload; do not
+   change subtitle normalization; do not change Unicode behaviour; do not remove
+   --config; do not replace Piper with another TTS system; do not change the model or
+   the selected voice; do not add a second Piper implementation or a second synthesis
+   path. There must remain ONE canonical synthesis implementation, and
+   PiperService.synthesize() must keep delegating to it.
+
+5. PRESERVE RUNTIME SELECTION (PLAN 15 FIX 2)
+   Order must remain: explicit piper_cmd -> sys.executable -m piper -> PATH piper
+   executable fallback. Do not reverse it, do not introduce PATH-first behaviour, do
+   not change the [PIPER RUNTIME] diagnostics beyond what the removal naturally
+   implies.
+
+6. UPDATE ONLY PIPER-RELEVANT TESTS
+   Add or update only tests for this bug. Tests must verify the generated Piper
+   command does NOT contain `--espeak-voice`, and that `--model`, `--config` and
+   `--output_file` remain present, and that `--speaker` is still preserved for
+   multi-speaker models. Do not rewrite unrelated tests, do not weaken existing
+   tests, do not mock away the exact command construction under test.
+
+7. REAL PIPER CLI VERIFICATION (critical)
+   Use the installed Piper 1.8.0 environment, the real `banmai` model, and a real
+   Vietnamese subtitle. Do not modify model or config. Verify: return code 0, WAV
+   exists, WAV non-empty, valid WAV header, duration > 0, command has no
+   `--espeak-voice`, input text supplied through stdin, audio generated from the
+   actual subtitle text.
+
+8. CRITICAL A/B VERIFICATION
+   A: corrected application synthesis path with
+      "Mẹ ơi, ba ơi, cho con đi chơi với các bạn nha?"
+   B: direct Piper in the same environment/model/config/text.
+   Compare return code, WAV exists, size, duration, sample rate, channels, SHA256.
+   Most importantly verify the audio is NOT the short audio for the literal CLI text
+   "--espeak-voice vi".
+
+9. TEST MULTIPLE DIFFERENT TEXTS
+   At least three Vietnamese texts, recorded with WAV path, size, duration, SHA256:
+   "Mẹ ơi, ba ơi, cho con đi chơi với các bạn nha?",
+   "Ừ, duyệt cho con luôn.",
+   "Ôi chồi ôi quá xá đã ha ha ha"
+   Different texts must produce different audio and no longer all produce the
+   suspicious short output. Do not modify batch logic.
+
+10. PREVIEW VOICE VERIFICATION
+    Start the app with `uv run python main.py` (do not change how it starts). Load
+    the SRT, select a subtitle, select `banmai`, click Preview Voice. Verify the
+    Piper command has no `--espeak-voice`, `[PIPER RUNTIME]` and `[PIPER INPUT]`
+    appear, the WAV is generated and plays, then preview a different subtitle and
+    confirm the output is not identical short audio every time.
+
+11. BATCH VERIFICATION (only if Preview Voice works)
+    At least three subtitles through the existing per-subtitle voice system with
+    Generate All Voices. Verify one WAV per subtitle, each existing, non-empty,
+    plausible durations, no identical short audio, no `--espeak-voice` in console
+    commands. Do not test Compose Audio or Final MP4.
+
+12. DO NOT FIX UNRELATED PLAN 17 FINDINGS
+    `piper_version` = "unknown", [PIPER RUNTIME] omitting PATH/command_error,
+    playback queue session guard, stale SRT/video load failure guard, Preview
+    project-context guard, and the `find_ffmpeg` plan-command issue are all OUT OF
+    SCOPE. Record only if relevant to the final report.
+
+13. RUN TESTS - only Piper-related tests first, via the existing unittest setup:
+    tests/test_piper_service.py, with attention to PiperRuntimeSelectionTest and
+    PiperServiceSynthesizeRegressionTest. Report passed/failed/errors/skipped/
+    blocked. Do not claim PASS if the command could not execute; record
+    "spawn EFTYPE" exactly. Do not repair the environment.
+
+14. COMPILE CHECK
+    uv run python -m py_compile services/piper_service.py
+    uv run python -m py_compile tests/test_piper_service.py
+    If blocked, report "NOT RUN - spawn EFTYPE". Do not claim compilation passed.
+
+15. PLAN 18 LOG FILES
+    plan/plan18require.txt (this file) and plan/plan18result.txt recording files
+    inspected, the exact Piper 1.8.0 CLI finding, the exact code change, tests
+    added/changed, every command executed, compile result, unit test result, real
+    Piper synthesis result, A/B result, Preview Voice result, Batch result if
+    performed, WAV sizes/durations/hashes where available, remaining issues and
+    blocked verifications. Use PASS / FAIL / NOT RUN / BLOCKED only when justified
+    by the actual result.
+
+16. FINAL SCOPE CHECK
+    Confirm the only application behaviour change is that the Piper CLI no longer
+    receives the unsupported `--espeak-voice` argument. Everything else unchanged.
+    If removing `--espeak-voice` does not fix the wrong-audio problem: STOP, report
+    the evidence, do not start debugging another Piper issue automatically.
+
+17. STOP after the minimal fix, the Piper-specific tests, verification where
+    executable, and both log files. Do not start PLAN 19, do not fix unrelated
+    issues, do not refactor, do not touch FFmpeg, project save/load, cleanup,
+    playback, voice assignment, or runtime selection.

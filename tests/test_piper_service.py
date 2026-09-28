@@ -1,25 +1,33 @@
 """Tests for local Piper voice discovery and preview synthesis."""
 
+import argparse
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.piper_service import (
+    PiperService,
     PiperSynthesisError,
     PiperVoice,
     VoicePreviewResult,
     batch_output_path,
+    build_piper_child_env,
+    describe_piper_runtime,
     discover_voices,
     espeak_voice_from_config,
     generate_batch_voices,
     normalize_piper_input,
+    piper_version_for_command,
     resolve_espeak_voice,
     resolve_piper_base_command,
     synthesize,
@@ -354,8 +362,8 @@ class PiperExactTextTest(unittest.TestCase):
                 name="voiceb", model_path=str(model_b),
                 config_path=str(config_b), source="piper",
             )
-            _, argv_a_path, _ = run_fake_synthesis(tmp_path, TEXT_A, voice_a)
-            _, argv_b_path, _ = run_fake_synthesis(tmp_path, TEXT_A, voice_b)
+            _, argv_a_path, _, _ = run_fake_synthesis(tmp_path, TEXT_A, voice_a)
+            _, argv_b_path, _, _ = run_fake_synthesis(tmp_path, TEXT_A, voice_b)
             argv_a = json.loads(argv_a_path.read_text(encoding="utf-8"))
             argv_b = json.loads(argv_b_path.read_text(encoding="utf-8"))
             self.assertIn(str(model_a), argv_a)
@@ -640,6 +648,462 @@ class PiperInputNormalizationTest(unittest.TestCase):
         self.assertEqual(
             normalize_piper_input(text), "Dòng một, dòng hai."
         )
+
+
+class PiperRuntimeSelectionTest(unittest.TestCase):
+    def test_current_module_preferred_over_path_exe(self):
+        import services.piper_service as service
+
+        with mock.patch.object(service, "is_piper_module_available",
+                               return_value=True), mock.patch.object(
+            service, "find_piper_executable",
+            return_value="C:\\other\\project\\.venv\\Scripts\\piper.exe",
+        ):
+            resolved = resolve_piper_base_command()
+        self.assertEqual(resolved, [sys.executable, "-m", "piper"])
+
+    def test_explicit_override_still_wins(self):
+        import services.piper_service as service
+
+        with mock.patch.object(service, "is_piper_module_available",
+                               return_value=True):
+            resolved = resolve_piper_base_command(
+                ["C:\\Program Files\\piper\\piper.exe", "--extra"]
+            )
+        self.assertEqual(
+            resolved, ["C:\\Program Files\\piper\\piper.exe", "--extra"]
+        )
+
+    def test_path_fallback_when_module_unavailable(self):
+        import services.piper_service as service
+
+        with mock.patch.object(service, "is_piper_module_available",
+                               return_value=False), mock.patch.object(
+            service, "find_piper_executable",
+            return_value="C:\\tools\\piper.exe",
+        ):
+            resolved = resolve_piper_base_command()
+        self.assertEqual(resolved, ["C:\\tools\\piper.exe"])
+
+    def test_missing_everything_is_a_clear_error(self):
+        import services.piper_service as service
+
+        with mock.patch.object(service, "is_piper_module_available",
+                               return_value=False), mock.patch.object(
+            service, "find_piper_executable", return_value=None
+        ):
+            with self.assertRaises(PiperSynthesisError) as ctx:
+                resolve_piper_base_command()
+            self.assertIn("Piper runtime not found", str(ctx.exception))
+
+    def test_describe_is_safe_without_any_runtime(self):
+        import services.piper_service as service
+
+        with mock.patch.object(service, "is_piper_module_available",
+                               return_value=False), mock.patch.object(
+            service, "find_piper_executable", return_value=None
+        ):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                info = describe_piper_runtime()
+        self.assertIsNone(info["piper_command"])
+        self.assertEqual(info["piper_version"], "unknown")
+        self.assertEqual(info["sys.executable"], sys.executable)
+        self.assertIn("PATH", info)
+        logs = buffer.getvalue()
+        self.assertIn("[PIPER RUNTIME]", logs)
+        self.assertIn("piper_version=unknown", logs)
+
+    def test_version_probe_uses_list_argv_without_shell(self):
+        import services.piper_service as service
+        import subprocess as _subprocess
+
+        captured = {}
+
+        class FakeResult:
+            returncode = 0
+            stdout = b"piper 1.2.0 (test)"
+            stderr = b""
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return FakeResult()
+
+        service._VERSION_CACHE.clear()
+        with mock.patch.object(_subprocess, "run", side_effect=fake_run):
+            version = service.piper_version_for_command(["somepiper"])
+        self.assertEqual(version, "piper 1.2.0 (test)")
+        self.assertIsInstance(captured["cmd"], list)
+        self.assertEqual(captured["cmd"][-1], "--version")
+        self.assertNotIn("shell", captured["kwargs"])
+
+    def test_version_probe_failure_means_unknown(self):
+        import services.piper_service as service
+        import subprocess as _subprocess
+
+        service._VERSION_CACHE.clear()
+        with mock.patch.object(
+            _subprocess, "run", side_effect=FileNotFoundError("gone")
+        ):
+            self.assertEqual(
+                service.piper_version_for_command(["gonepiper"]), "unknown"
+            )
+
+    def test_explicit_paths_with_spaces_pass_through_intact(self):
+        resolved = resolve_piper_base_command(
+            ["C:\\My Tools\\piper.exe", "--model", "C:\\My Voices\\v.onnx"]
+        )
+        self.assertEqual(
+            resolved,
+            ["C:\\My Tools\\piper.exe", "--model", "C:\\My Voices\\v.onnx"],
+        )
+
+
+class PiperServiceSynthesizeRegressionTest(unittest.TestCase):
+    """PLAN 15 FIX 3: PiperService.synthesize() must exist and delegate."""
+
+    def test_method_exists_and_is_callable(self):
+        self.assertTrue(callable(getattr(PiperService(), "synthesize", None)))
+
+    def test_preview_compatible_call_reaches_implementation(self):
+        import services.piper_service as service
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            tag = uuid.uuid4().hex[:8]
+            fake_exe = tmp_path / f"fake_{tag}.py"
+            recorded_stdin = tmp_path / f"stdin_{tag}.bin"
+            write_wav_fake_exe(
+                fake_exe, tmp_path / f"argv_{tag}.json", recorded_stdin
+            )
+            out_wav = tmp_path / "preview" / f"{tag}.wav"
+            service_obj = PiperService()
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                # Exact call shape used by Preview Voice (app/ui.py).
+                result = service_obj.synthesize(
+                    "Xin chào", voice, out_wav, request_id="preview1",
+                    piper_cmd=[sys.executable, str(fake_exe)],
+                )
+            self.assertTrue(Path(result).is_file())
+            self.assertIn("request_id=preview1", buffer.getvalue())
+
+    def test_method_uses_fix2_runtime_selection(self):
+        import services.piper_service as service
+        import subprocess as _subprocess
+        import wave as _wave
+
+        captured = {}
+
+        class FakeResult:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            out = cmd[cmd.index("--output_file") + 1]
+            with _wave.open(out, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(22050)
+                wav.writeframes(b"\x00\x00" * 220)
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            voice = make_voice(tmp)
+            out_wav = Path(tmp) / "preview.wav"
+            with mock.patch.object(service, "is_piper_module_available",
+                                   return_value=True), mock.patch.object(
+                service, "find_piper_executable",
+                return_value="C:\\other\\project\\.venv\\Scripts\\piper.exe",
+            ), mock.patch.object(_subprocess, "run", side_effect=fake_run):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    # No override: must prefer the current-env module,
+                    # never the foreign PATH exe.
+                    PiperService().synthesize("Xin chào", voice, out_wav)
+            self.assertEqual(
+                captured["cmd"][:3], [sys.executable, "-m", "piper"]
+            )
+            self.assertNotIn("shell", captured["kwargs"])
+            self.assertIn("[PIPER RUNTIME]", buffer.getvalue())
+
+    def test_method_explicit_override_still_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            voice = make_voice(tmp)
+            tag = uuid.uuid4().hex[:8]
+            fake_exe = Path(tmp) / f"fake_{tag}.py"
+            recorded_argv = Path(tmp) / f"argv_{tag}.json"
+            write_wav_fake_exe(
+                fake_exe, recorded_argv, Path(tmp) / f"stdin_{tag}.bin"
+            )
+            PiperService().synthesize(
+                "Xin chào", voice, Path(tmp) / "o.wav",
+                piper_cmd=[sys.executable, str(fake_exe)],
+            )
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertIn("--model", argv)
+
+
+# PLAN 18: the canonical synthesize() must never put the unsupported
+# `--espeak-voice` option on the Piper command line. piper-tts collects unknown
+# options with parse_known_args() and then synthesises " ".join(unknown_args)
+# INSTEAD of reading stdin, so the flag silently turned every request into the
+# literal text "--espeak-voice <voice>". These tests assert the real argv that
+# reaches a real subprocess (fake Piper script), not a mocked call.
+def piper_180_unknown_args(argv):
+    """Reproduce piper-tts 1.8.0's parse_known_args() leftover handling.
+
+    Mirrors the exact option set of the installed piper __main__.py parser.
+    Returns what piper would treat as the synthesis text instead of stdin:
+    an empty result means the real stdin payload is used.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-m", "--model", required=True)
+    parser.add_argument("-c", "--config")
+    parser.add_argument("-i", "--input-file", "--input_file", action="append")
+    parser.add_argument("-f", "--output-file", "--output_file")
+    parser.add_argument("-d", "--output-dir")
+    parser.add_argument("--output-dir-naming")
+    parser.add_argument("--output-raw", action="store_true")
+    parser.add_argument("-s", "--speaker", type=int)
+    parser.add_argument("--length-scale", "--length_scale", type=float)
+    parser.add_argument("--noise-scale", "--noise_scale", type=float)
+    parser.add_argument("--noise-w-scale", "--noise_w-scale", "--noise_w",
+                        type=float)
+    parser.add_argument("--cuda", action="store_true")
+    parser.add_argument("--sentence-silence", "--sentence_silence", type=float)
+    parser.add_argument("--volume", type=float)
+    parser.add_argument("--no-normalize", action="store_true")
+    parser.add_argument("--data-dir", "--data_dir", action="append")
+    parser.add_argument("--debug", action="store_true")
+    _, unknown_args = parser.parse_known_args(list(argv))
+    return unknown_args
+
+
+class PiperCliArgsRegressionTest(unittest.TestCase):
+    """PLAN 18: no unsupported --espeak-voice on the Piper command line."""
+
+    def test_command_never_contains_espeak_voice_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            _, recorded_argv, _, _ = run_fake_synthesis(tmp_path, TEXT_A, voice)
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertNotIn("--espeak-voice", argv)
+            self.assertNotIn("espeak-voice", argv)
+            # The resolved eSpeak id must not leak in as a bare token either.
+            self.assertNotIn("vi", argv)
+
+    def test_required_flags_remain_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            result, recorded_argv, _, _ = run_fake_synthesis(
+                tmp_path, TEXT_A, voice
+            )
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertIn("--model", argv)
+            self.assertIn("--config", argv)
+            self.assertIn("--output_file", argv)
+            self.assertEqual(argv[argv.index("--model") + 1], voice.model_path)
+            self.assertEqual(argv[argv.index("--config") + 1], voice.config_path)
+            self.assertEqual(argv[argv.index("--output_file") + 1], str(result))
+
+    def test_text_arrives_through_stdin_not_argv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            _, recorded_argv, recorded_stdin, _ = run_fake_synthesis(
+                tmp_path, TEXT_A, voice
+            )
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            payload = recorded_stdin.read_bytes()
+            self.assertEqual(payload, (TEXT_A + "\n").encode("utf-8"))
+            for token in argv:
+                self.assertNotIn("chào", token)
+                self.assertNotIn("Mẹ", token)
+
+    def test_no_unknown_args_reach_piper_180(self):
+        """No leftover argv token, so piper reads stdin, not CLI text."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            _, recorded_argv, recorded_stdin, _ = run_fake_synthesis(
+                tmp_path, TEXT_A, voice
+            )
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertEqual(piper_180_unknown_args(argv), [])
+            self.assertTrue(recorded_stdin.read_bytes())
+
+    def test_speaker_flag_preserved_for_multispeaker_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            base = make_voice(tmp)
+            multi = PiperVoice(
+                name=base.name, model_path=base.model_path,
+                config_path=base.config_path, source=base.source,
+                language=base.language, num_speakers=4,
+            )
+            _, recorded_argv, _, _ = run_fake_synthesis(tmp_path, TEXT_B, multi)
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertIn("--speaker", argv)
+            self.assertEqual(argv[argv.index("--speaker") + 1], "0")
+            self.assertNotIn("--espeak-voice", argv)
+
+    def test_speaker_flag_absent_for_single_speaker_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            _, recorded_argv, _, _ = run_fake_synthesis(tmp_path, TEXT_C, voice)
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertNotIn("--speaker", argv)
+            self.assertNotIn("--espeak-voice", argv)
+
+    def test_explicit_speaker_override_still_passed_through(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            base = make_voice(tmp)
+            multi = PiperVoice(
+                name=base.name, model_path=base.model_path,
+                config_path=base.config_path, source=base.source,
+                language=base.language, num_speakers=2,
+            )
+            tag = uuid.uuid4().hex[:8]
+            fake_exe = tmp_path / f"fake_{tag}.py"
+            recorded_argv = tmp_path / f"argv_{tag}.json"
+            recorded_stdin = tmp_path / f"stdin_{tag}.bin"
+            write_wav_fake_exe(fake_exe, recorded_argv, recorded_stdin)
+            out_wav = tmp_path / "o.wav"
+            with redirect_stdout(io.StringIO()):
+                synthesize(TEXT_A, multi, out_wav, speaker=1,
+                           piper_cmd=[sys.executable, str(fake_exe)])
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertEqual(argv[argv.index("--speaker") + 1], "1")
+            self.assertNotIn("--espeak-voice", argv)
+
+    def test_explicit_espeak_override_does_not_reach_cli(self):
+        """The espeak_voice= parameter stays a code path, never an argv token."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            _, recorded_argv, _, _ = run_fake_synthesis(tmp_path, TEXT_A, voice)
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertNotIn("--espeak-voice", argv)
+            self.assertEqual(piper_180_unknown_args(argv), [])
+
+    def test_batch_items_also_send_no_espeak_voice_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            tag = uuid.uuid4().hex[:8]
+            fake_exe = tmp_path / f"fake_{tag}.py"
+            recorded_argv = tmp_path / f"argv_{tag}.json"
+            recorded_stdin = tmp_path / f"stdin_{tag}.bin"
+            write_wav_fake_exe(fake_exe, recorded_argv, recorded_stdin)
+            with redirect_stdout(io.StringIO()):
+                success, errors = generate_batch_voices(
+                    [(1, TEXT_A), (2, TEXT_B), (3, TEXT_C)],
+                    tmp_path / "out", f"b{tag}", voice,
+                    piper_cmd=[sys.executable, str(fake_exe)],
+                )
+            self.assertEqual(errors, {})
+            self.assertEqual(len(success), 3)
+            argv = json.loads(recorded_argv.read_text(encoding="utf-8"))
+            self.assertNotIn("--espeak-voice", argv)
+            self.assertEqual(piper_180_unknown_args(argv), [])
+
+    def test_espeak_voice_still_logged_for_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            _, _, _, log = run_fake_synthesis(tmp_path, TEXT_A, voice)
+            self.assertIn("espeak_voice='vi'", log)
+            self.assertNotIn("--espeak-voice", log)
+
+
+class PiperChildStdioEncodingRegressionTest(unittest.TestCase):
+    """Piper decodes stdin with the locale encoding, so the UTF-8 bytes this
+    module writes must be paired with a UTF-8 child stdio encoding."""
+
+    def test_child_env_pins_stdio_to_utf8(self):
+        env = build_piper_child_env()
+        self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
+
+    def test_child_env_inherits_the_rest_of_the_environment(self):
+        env = build_piper_child_env()
+        self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
+        # Only PYTHONIOENCODING is added; nothing is dropped.
+        self.assertEqual(len(env), len(os.environ) + 1)
+
+    def test_child_env_does_not_mutate_the_parent_environment(self):
+        before = os.environ.get("PYTHONIOENCODING")
+        build_piper_child_env()
+        self.assertEqual(os.environ.get("PYTHONIOENCODING"), before)
+
+    def test_child_decodes_utf8_stdin_under_the_pinned_encoding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "echo_stdin.py"
+            probe.write_text(
+                "import sys\n"
+                "sys.stdout.buffer.write(sys.stdin.read().encode('utf-8'))\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(probe)],
+                input=TEXT_A.encode("utf-8") + b"\n",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=build_piper_child_env(), timeout=60, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.decode("utf-8").strip(), TEXT_A)
+
+    def test_legacy_codepage_stdin_would_corrupt_the_same_bytes(self):
+        """Why the env pin exists: a cp1252 child silently mangles the bytes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "echo_stdin.py"
+            probe.write_text(
+                "import sys\n"
+                "sys.stdout.buffer.write(sys.stdin.read().encode('utf-8'))\n",
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["PYTHONIOENCODING"] = "cp1252"
+            result = subprocess.run(
+                [sys.executable, str(probe)],
+                input=TEXT_A.encode("utf-8") + b"\n",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=env, timeout=60, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotEqual(result.stdout.decode("utf-8").strip(), TEXT_A)
+
+    def test_vietnamese_logging_survives_a_cp1252_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            voice = make_voice(tmp)
+            tag = uuid.uuid4().hex[:8]
+            fake_exe = tmp_path / f"fake_{tag}.py"
+            write_wav_fake_exe(
+                fake_exe, tmp_path / f"argv_{tag}.json",
+                tmp_path / f"stdin_{tag}.bin",
+            )
+            raw = io.BytesIO()
+            cp1252_stream = io.TextIOWrapper(
+                raw, encoding="cp1252", errors="strict", newline="\n",
+            )
+            with redirect_stdout(cp1252_stream):
+                synthesize(
+                    TEXT_A, voice, tmp_path / f"{tag}.wav",
+                    piper_cmd=[sys.executable, str(fake_exe)],
+                    request_id="cp1252-regression",
+                )
+            cp1252_stream.flush()
+            self.assertIn(TEXT_A, raw.getvalue().decode("utf-8"))
 
 
 if __name__ == "__main__":

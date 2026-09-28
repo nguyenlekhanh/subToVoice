@@ -1,0 +1,65 @@
+PLAN 15 FIX 2 RESULT (Piper runtime selection + diagnostics)
+
+1. Prior behavior (verified from code before changing)
+- resolve_piper_base_command() order was: explicit override -> FIRST match
+  of shutil.which("piper") -> sys.executable -m piper fallback -> error.
+- Consequence: any piper.exe on PATH (e.g. the older 30_1 venv) silently
+  overrode the current application's own Python environment, with no log
+  line identifying which runtime was chosen. Mechanism confirmed; causal link
+  to pronunciation NOT assumed.
+
+2. What was changed (services/piper_service.py only)
+- Resolution order reversed to deterministic: explicit override ->
+  current-env module (sys.executable -m piper) -> PATH executable fallback
+  -> clear PiperSynthesisError. PATH fallback prints an explicit line, plus
+  a WARNING naming the foreign executable and current Python when the exe
+  lives outside sys.prefix/base_prefix.
+- New piper_version_for_command(): `<cmd> --version` as list argv (no
+  shell=True), first stdout line or "unknown" on any failure; per-command
+  cached so batches probe at most once.
+- New describe_piper_runtime(): returns dict + prints the [PIPER RUNTIME]
+  block (sys.executable, python_version, piper_module_available,
+  piper_executable, piper_command, command_source, piper_version, PATH).
+- New log_piper_runtime_once(): full block on first use of each distinct
+  command per process; hooked into synthesize() so every preview/batch run
+  identifies its runtime without flooding logs.
+- Text/stdin/model/config/espeak/voice/batch/WAV logic untouched (verified
+  by read-back; stdin normalization from PLAN 15 FIX byte-identical).
+
+3. Diagnostics added
+- [PIPER RUNTIME] block (7 fields + PATH in the returned dict), foreign-exe
+  WARNING, per-command version cache. tests/manual_piper_runtime_check.py
+  (new, stdlib+service only): prints the block for the running interpreter,
+  synthesizes fixed TEXT_A with the real discovered banmai model, reports
+  return path, wav_info size/duration/hash, and how to compare APP vs MANUAL
+  runtimes. No Tkinter, no batch changes.
+
+4. Runtime selected during testing
+- UNKNOWN: no Python/shell execution is possible in this environment (every
+  command returns spawn EFTYPE), so neither the app runtime nor the manual
+  script ran here. On the user's machine the first synthesis log will now
+  state command_source=module|path|explicit explicitly.
+
+5. Mismatch confirmed or not
+- NOT confirmed. Only the selection MECHANISM (PATH-first silence) was
+  proven from code. Whether 30_1's exe vs the 30_2 env module produces
+  different audio requires the user's A/B: run the manual script, compare
+  its [PIPER RUNTIME] block + WAV against the app's log lines for the same
+  text/model. No pronunciation claim made.
+
+6. Tests run / blocked
+- NOT RUN. `python -m py_compile services/piper_service.py`,
+  `python -m py_compile tests/test_piper_service.py`, and
+  `python tests/manual_piper_runtime_check.py`: all blocked, each returned
+  `spawn EFTYPE`. New PiperRuntimeSelectionTest (8 tests: module preferred,
+  PATH not preferred, explicit override incl. spaced Windows paths, PATH
+  fallback, missing-runtime error, safe describe, list-argv/no-shell probe,
+  probe-failure unknown) written but UNRUN. Existing batch/text tests
+  untouched (explicit-override precedence preserved, so their fake
+  piper_cmd paths behave identically).
+
+7. Remaining uncertainty
+- Real version strings, real A/B audio comparison, and whether the 30_1 exe
+  differs audibly from the current-env module are all open pending the
+  user's run. If both runtimes sound identical, the mismatch hypothesis is
+  refuted and investigation must return to input/model/config.

@@ -1,0 +1,436 @@
+PLAN 18 RESULT LOG (Fix Piper CLI `--espeak-voice` Invocation ONLY)
+Date: 2026-09-27
+
+OUTCOME IN ONE LINE: the `--espeak-voice` fix is CONFIRMED CORRECT AND NECESSARY
+(proven by a controlled A/B: 0.697 s of literal flag text before vs 2.624 s of the
+real sentence after, both exit 0), and a follow-up authorised by the user then fixed
+the SECOND cause of the wrong audio (UTF-8 stdin vs cp1252 locale, measured at
+4.760 s of garbled output) - so Vietnamese is now correct in a DEFAULT environment
+with no environment variables. All 71 tests pass.
+
+================================================================================
+1. FILES INSPECTED
+================================================================================
+  services/piper_service.py                  (702 lines)  - MODIFIED (the fix)
+  tests/test_piper_service.py                (1027 lines) - MODIFIED (tests added)
+  tests/manual_piper_runtime_check.py        (66 lines)   - NOT modified
+  .venv/Lib/site-packages/piper/__main__.py  (258 lines)  - NOT modified
+  .venv/Lib/site-packages/piper/voice.py     - NOT modified
+  .venv/Lib/site-packages/piper/config.py    - NOT modified
+  config/piper/banmai.onnx / .onnx.json      - NOT modified
+  plan/plan1..plan16*, plan15fix2*, plan15fix3*, plan17*, plan18require.txt
+  git HEAD version of tests/test_piper_service.py (used to prove pre-existing bugs)
+
+================================================================================
+2. PIPER 1.8.0 CLI BEHAVIOUR - NOW VERIFIED BY EXECUTION
+================================================================================
+Installed: piper-tts 1.8.0 (uv 0.12.3, CPython 3.12.2,
+C:\khanh\python\30_2 subTheoVoice1\.venv\Scripts\python.exe)
+
+2.1 Is `--espeak-voice` a valid CLI argument?              NO - CONFIRMED
+    `uv run python -m piper --version` printed the real usage line:
+      usage: __main__.py [-h] -m MODEL [-c CONFIG] [-i INPUT_FILE]
+        [-f OUTPUT_FILE] [-d OUTPUT_DIR] [--output-dir-naming {timestamp,text}]
+        [--output-raw] [-s SPEAKER] [--length-scale ...] [--noise-scale ...]
+        [--noise-w-scale ...] [--cuda] [--sentence-silence ...] [--volume ...]
+        [--no-normalize] [--data-dir ...] [--debug]
+      __main__.py: error: the following arguments are required: -m/--model
+    No `--espeak-voice` appears. (This also CONFIRMS PLAN 17 Finding B at runtime:
+    `--version` is unsupported, so `piper_version` is legitimately "unknown".)
+
+2.2 How are unknown CLI arguments handled?                 SILENTLY - CONFIRMED
+    `parse_known_args()` (line 102); no rejection, no warning.
+
+2.3 Can unknown arguments become synthesis text?           YES - CONFIRMED
+    Lines 117-123: `if unknown_args: texts = [" ".join(unknown_args)]`.
+
+2.4 Is stdin used when unknown arguments are present?      NO - CONFIRMED
+    Same branch: `texts` is bound to the joined leftovers, so `sys.stdin` is never
+    read. The application's stdin payload is written to the pipe and discarded.
+
+2.5 Does the .onnx.json already contain the eSpeak voice?  YES - CONFIRMED
+    config/piper/banmai.onnx.json line 6: "voice": "vi"; loaded by
+    piper/config.py:81 and used directly at piper/voice.py:297-301. All 17
+    discovered models carry a non-empty espeak.voice. The CLI flag was never needed.
+
+================================================================================
+3. EXACT CODE CHANGE (one application file, unchanged from the earlier attempt)
+================================================================================
+services/piper_service.py, canonical module-level synthesize():
+
+  REMOVED (the only behavioural change, 2 lines):
+        if resolved_espeak_voice:
+            cmd += ["--espeak-voice", resolved_espeak_voice]
+
+  ADDED: a 5-line comment explaining why the flag must never be placed on the
+  command line. No behaviour.
+
+  Resulting command (verified live, see section 8):
+    [python] -m piper --model <m> --config <c> --output_file <wav>
+    (+ --speaker only for multi-speaker models)
+
+CONFIRMED UNCHANGED: stdin_payload = (normalized + "\n").encode("utf-8");
+normalize_piper_input; model/config/output paths; subprocess.run(..., input=
+stdin_payload, stdout=PIPE, stderr=PIPE, timeout, check=False); returncode
+handling; WAV existence/non-empty validation; resolve_piper_base_command() order
+(explicit -> sys.executable -m piper -> PATH); log_piper_runtime_once() and the
+[PIPER RUNTIME] block; PiperService.synthesize() delegating to synthesize();
+generate_batch_voices(); voice discovery; per-subtitle voice; UI; FFmpeg; project;
+cleanup; playback; request IDs; shutdown; stale-result handling. No model, config,
+dependency or environment change.
+
+================================================================================
+4. TESTS ADDED (Piper-only, additive)
+================================================================================
+`import argparse` added. New helper `piper_180_unknown_args(argv)` mirroring the
+installed 1.8.0 parser. New class `PiperCliArgsRegressionTest` with 10 tests, all
+driving the real synthesize() through a real subprocess:
+no `--espeak-voice` and no bare voice id; `--model`/`--config`/`--output_file`
+present with correct values; stdin == (TEXT_A+"\n") exactly; zero unknown args
+under the real 1.8.0 parser; `--speaker` 0 / explicit 1 / absent for
+single-speaker; batch path clean; espeak voice still logged for diagnostics.
+  No existing test was modified, removed or weakened.
+  File grew 849 -> 1027 lines; 55 -> 65 test methods.
+
+  ACCURACY NOTE (recorded, not fixed): the test named
+  `test_explicit_espeak_override_does_not_reach_cli` does not in fact pass an
+  `espeak_voice` override through `run_fake_synthesis()`, so in practice it
+  re-tests the default case rather than the explicit-override case. It passes, but
+  it is weaker than its name suggests. I did not strengthen it because doing so
+  requires either extending `run_fake_synthesis()` - the same helper that the
+  pre-existing broken test in Finding 1 uses - or inventing a synthetic voice
+  object, i.e. a change to shared test infrastructure that PLAN 18 forbids, and I
+  will not modify code while under the "record and stop" rule.
+  The scenario it was meant to cover IS nonetheless proven at runtime, because the
+  real banmai config supplies "voice": "vi", so `resolved_espeak_voice` was "vi" on
+  every real run in sections 7-11 and the flag was still absent from every command
+  (the exact `if resolved_espeak_voice:` branch that used to append the flag was
+  therefore live in all of them).
+
+================================================================================
+5. COMMANDS EXECUTED AND THEIR ACTUAL RESULTS
+================================================================================
+NOTE: execution was blocked (`spawn EFTYPE`) during the first PLAN 18 pass. It
+became available in this pass; all real results below are from actual execution.
+
+  uv --version
+    -> uv 0.12.3 (507230998 2026-08-07 x86_64-pc-windows-msvc)
+  uv run python --version                       -> Python 3.12.2
+  uv run python -c "import sys; print(sys.executable); print(sys.version)"
+    -> C:\khanh\python\30_2 subTheoVoice1\.venv\Scripts\python.exe
+       3.12.2 [MSC v.1937 64 bit (AMD64)]
+  uv run python -m piper --version              -> usage + "required: -m/--model"
+  where piper  -> NOT FOUND on PATH  (INFO: Could not find files)
+  where python  -> C:\Python312\python.exe, ...\Python311\python.exe, WindowsApps,
+                   C:\msys64\mingw64\bin\python.exe
+  where ffmpeg / ffprobe -> available (chocolatey first)
+  uv run python -m py_compile services/piper_service.py    -> EXIT 0
+  uv run python -m py_compile tests/test_piper_service.py  -> EXIT 0
+  uv run python -m unittest tests.test_piper_service -v   -> see section 6
+  uv run python -c "import app.ui"        -> UI IMPORT OK
+  uv run python -c "import app.state"     -> STATE IMPORT OK
+  uv run python -c "from services.piper_service import PiperService, PiperVoice, synthesize"
+                                       -> PIPER IMPORT OK
+  uv run python -c "import services.ffmpeg_service"  -> FFMPEG IMPORT OK
+  uv run python tests/manual_piper_runtime_check.py   -> see section 7
+  uv run python <three-text driver>                  -> see section 8
+  uv run python <batch driver>                       -> see section 10
+  uv run python <preview-API driver>                 -> see section 9
+  uv run python -m piper ... (direct A/B runs)      -> see sections 7-8
+  uv run python <default-locale driver>              -> see section 11
+
+Runtime selection observed live: `where piper` finds nothing, so the PATH fallback
+is never used; `piper_module_available=True` wins and
+`piper_executable=C:\khanh\python\30_2 subTheoVoice1\.venv\Scripts\piper.EXE`,
+`piper_command=[...\.venv\Scripts\python.exe, -m, piper]`, `command_source=module`
+- the PLAN 15 FIX 2 expected default.
+
+================================================================================
+6. UNIT TEST RESULT
+================================================================================
+  Command: uv run python -m unittest tests.test_piper_service -v
+  total   : 65      PASS
+  passed  : 64
+  failed  : 0
+  errors  : 1
+  skipped : 0
+  RESULT  : FAILED (errors=1)
+
+  The 10 new PiperCliArgsRegressionTest tests all pass, including
+  test_no_unknown_args_reach_piper_180.
+  PiperRuntimeSelectionTest: 8/8 pass.
+  PiperServiceSynthesizeRegressionTest: 4/4 pass.
+
+  THE ONE ERROR IS PRE-EXISTING AND NOT A REGRESSION FROM PLAN 18:
+    ERROR: PiperExactTextTest.test_different_voices_resolve_different_models
+    Traceback: tests/test_piper_service.py line 362
+      _, argv_a_path, _ = run_fake_synthesis(tmp_path, TEXT_A, voice_a)
+    ValueError: too many values to unpack (expected 3)
+  Proof it predates PLAN 18: `git show HEAD:tests/test_piper_service.py` shows the
+  committed helper already `return result, recorded_argv, recorded_stdin,
+  buffer.getvalue()` (4 values, HEAD line 193) while the committed test at HEAD
+  lines 357-358 unpacks 3. The defect shipped in the repository and was only
+  discoverable now because the test suite has never been executable before.
+  NOT FIXED - unrelated to `--espeak-voice` (see section 12 rule).
+
+================================================================================
+7. REAL PIPER SYNTHESIS (application path) - PASS, with a caveat
+================================================================================
+  Command: uv run python tests/manual_piper_runtime_check.py
+  Runtime block: command_source=module, piper_command=[venv python, -m, piper],
+                 piper_module_available=True, piper_version=unknown
+  [PIPER] CMD: ... -m piper --model ...\banmai.onnx --config ...\banmai.onnx.json
+                 --output_file ...\temp\preview\manual_runtime_4e43f5e6.wav
+                 -> NO --espeak-voice  PASS
+  [PIPER INPUT] text_len=46 stdin_bytes=58 stdin_ends_with_newline=True  PASS
+  returncode=0  PASS      WAV exists  PASS      WAV non-empty  PASS
+  size=115756  duration=2.624s  sr=22050  ch=1  PASS (valid header, duration > 0)
+
+  CAVEAT: the first run of this command CRASHED before Piper was reached:
+    File "services/piper_service.py", line 479, in synthesize
+      print(f"text={normalized!r}")
+    UnicodeEncodeError: 'charmap' codec can't encode character '\u1eb9'
+  This is a separate bug - see section 11/FINDING 2. All successful runs above were
+  executed with `PYTHONIOENCODING=utf-8` set in the shell (an environment variable;
+  no file, dependency or environment was modified).
+
+================================================================================
+8. CRITICAL A/B VERIFICATION - PASS
+================================================================================
+Identical Python environment, identical Piper runtime, identical model, identical
+config, identical UTF-8 text ("Mẹ ơi, ba ơi, cho con đi chơi với các bạn nha?"),
+only the flag differs.
+
+  B  direct Piper, correct command line (stdin = UTF-8 text)
+     returncode=0  size=109612  dur=2.485s  sr=22050  ch=1  sw=2
+     sha256=070a869bfc38e9bc
+
+  A  application synthesize() path
+     returncode=0  size=115756  dur=2.624s  sr=22050  ch=1
+     sha256=057ab70cedf1cb58
+
+  WITH THE OLD FLAG (regression demonstration, direct Piper)
+     uv run python -m piper --model ... --config ... --espeak-voice vi --output_file ...
+     returncode=0  size=30764   dur=0.697s  sr=22050  ch=1
+     sha256=6e76e003a39962f9
+
+  INTERPRETATION
+  - A and B are both valid, non-empty, mono 16-bit 22050 Hz WAVs whose durations
+    (2.485 s / 2.624 s) are plausible for a 46-character Vietnamese sentence. They
+    are not bit-identical because piper's VITS decoder uses randomised noise
+    scaling per run; the plan explicitly allows this.
+  - The flagged run produced a 0.697 s clip - roughly what the literal string
+    "--espeak-voice vi" would sound like - and it still exited 0 with a valid WAV.
+    This is exactly the failure mode PLAN 17 predicted, now demonstrated.
+  - CONCLUSION: removing `--espeak-voice` is confirmed both necessary and correct;
+    the audio is the sentence, not the flag text.  PASS
+
+================================================================================
+9. THREE DIFFERENT TEXTS - PASS
+================================================================================
+Driven through the corrected application synthesize() with the real banmai model:
+
+  text 1  "Mẹ ơi, ba ơi, cho con đi chơi với các bạn nha?"
+          size=112684  duration=2.554s  sha256=0322dc1e9c425682  sr=22050 ch=1
+  text 2  "Ừ, duyệt cho con luôn."
+          size=49708   duration=1.126s  sha256=3ed71b2db1440651  sr=22050 ch=1
+  text 3  "Ôi chồi ôi quá xá đã ha ha ha"
+          size=66092   duration=1.498s  sha256=f9e2d8a9a9846352  sr=22050 ch=1
+
+  Three different sizes, three different durations, three different hashes;
+  durations scale with text length (46 / 18 / 28 chars -> 2.55 / 1.13 / 1.50 s).
+  No longer "the same short output". No `[PIPER] CMD` contained `--espeak-voice`.
+  batch logic untouched.  PASS
+
+================================================================================
+10. BATCH VERIFICATION - PASS
+================================================================================
+generate_batch_voices() with the real discovered voices and per-subtitle voice
+names (banmai, minhquang, banmai) - 3 subtitles:
+
+  BATCH total=3 ok=3 errors={}
+  index=1 voice=banmai     size=115756  duration=2.624s  sha256=db11f7386f7db530
+  index=2 voice=minhquang  size=63532   duration=1.440s  sha256=d6b7cf575139ed4d
+  index=3 voice=banmai     size=66604   duration=1.509s  sha256=63c68e21d2d78a0e
+
+  One distinct WAV per subtitle, all present and non-empty, durations plausible and
+  mutually different, two different voices exercised, errors empty, returncode=0
+  for every item, and no `--espeak-voice` in any command.
+  Compose Audio and Final MP4 were NOT tested (out of scope).  PASS
+
+================================================================================
+11. PREVIEW VOICE - NOT RUN (GUI), Piper path proven instead
+================================================================================
+  `uv run python main.py` was NOT started: the application opens a Tkinter window
+  and blocks, and no interactive GUI session is available through this tool.
+  Clicking Preview Voice, watching the console and hearing playback are therefore
+  NOT RUN and are not claimed.
+  What IS proven: the exact call Preview Voice makes
+  (app/ui.py:1272-1304 -> PiperService.synthesize(text, voice, wav,
+  request_id=...)) was executed for real with the discovered banmai voice:
+     returncode=0  size=112172  duration=2.543s  sr=22050 ch=1
+     [PIPER] CMD: ... -m piper --model ... --config ... --output_file ...
+     -> no --espeak-voice
+  Because the GUI delegates to that one canonical function, the flag removal is
+  proven to reach Preview Voice. The GUI click and audio playback remain NOT RUN.
+
+================================================================================
+12. FOLLOW-UP FIXES (authorised by the user after this log was first written)
+================================================================================
+The user was shown the findings below and explicitly chose to have the two
+pre-existing bugs fixed as well as the encoding bug. That is the only reason this
+section exists; everything above it is the original PLAN 18 scope.
+
+12.1 FIX: the Piper child now gets an explicit UTF-8 stdio environment
+     services/piper_service.py gains:
+         def build_piper_child_env() -> dict:
+             env = dict(os.environ)
+             env["PYTHONIOENCODING"] = "utf-8"
+             return env
+     and the one synthesis subprocess.run() call now passes
+     `env=build_piper_child_env()`.
+     Why this is a correctness fix and not a preference: this module's contract is
+     that it writes UTF-8 bytes to the child's stdin (`(normalized + "\n").encode
+     ("utf-8")`), and Piper decodes stdin with the locale encoding. The two must
+     agree, so the child's encoding is pinned rather than inherited. The parent's
+     own PYTHONIOENCODING is left untouched; nothing is leaked to os.environ.
+     `piper_version_for_command()` was deliberately NOT changed - the `--version`
+     probe only exchanges ASCII and already decodes with errors="replace".
+
+12.2 FIX: this module's diagnostic prints can no longer crash synthesis
+     services/piper_service.py gains `_force_utf8_stdio()`, which reconfigures
+     sys.stdout/sys.stderr to UTF-8 with errors="backslashreplace", skipping any
+     stream that has no reconfigure() (StringIO under a test runner, or None under
+     pythonw). It runs once at import and again at the top of synthesize(), because
+     a caller may swap sys.stdout after import (which is exactly what
+     redirect_stdout does in the tests).
+     errors="backslashreplace" is a second line of defence: even if a sink somehow
+     cannot take UTF-8, unencodable characters degrade to \uXXXX escapes instead of
+     raising UnicodeEncodeError and aborting the synthesis.
+
+12.3 FIX: the pre-existing test error
+     tests/test_piper_service.py lines 362-363 unpacked 3 values from
+     run_fake_synthesis(), which returns 4. Changed to unpack 4, matching the
+     helper and the other 14 call sites. This was the minimal repair: the test's
+     intent (result and recorded argv) is unchanged and no assertion was altered.
+
+12.4 NEW TESTS (Piper-only, additive): class
+     PiperChildStdioEncodingRegressionTest with 6 tests:
+       - build_piper_child_env() pins PYTHONIOENCODING to utf-8
+       - it inherits the rest of the environment (PATH matches; exactly one key added)
+       - it does not mutate os.environ
+       - a child launched with that env round-trips Vietnamese stdin byte-exactly
+       - a child pinned to cp1252 demonstrably corrupts the same bytes
+         (this is the regression the fix exists for, pinned explicitly so the test
+         is deterministic on any machine)
+       - synthesize() completes and still emits the Vietnamese text when sys.stdout
+         is a strict cp1252 TextIOWrapper
+     Suite: 65 -> 71 tests, 71 pass, 0 failures, 0 errors, 0 skipped.
+
+12.5 VERIFICATION IN A DEFAULT ENVIRONMENT (no PYTHONIOENCODING, output redirected)
+     This is the decisive check, because the original bug only appeared without
+     the workaround.
+       uv run python -m py_compile services/piper_service.py    -> exit 0
+       uv run python -m py_compile tests/test_piper_service.py  -> exit 0
+       uv run python -m unittest tests.test_piper_service       -> Ran 71 ... OK
+       uv run python tests/manual_piper_runtime_check.py > log
+         returncode=0  size=114732  duration=2.601s   (was 4.760s / crash before)
+         log line 25 contains: text='Mẹ ơi, ba ơi, cho con đi chơi với các bạn nha?'
+         i.e. correct Vietnamese written to the redirected log as UTF-8
+       three-text driver > log
+         text1 size=110636 duration=2.508s sha256=6f00437b080371c1
+         text2 size=47660  duration=1.080s sha256=bf041636e276fecf
+         text3 size=64044  duration=1.451s sha256=2d073a3847874e58
+       batch driver (2 voices) > log
+         BATCH total=3 ok=3 errors={}
+         index=1 banmai     size=109612 duration=2.485s sha256=523cd324e2354fff
+         index=2 minhquang  size=60972  duration=1.382s sha256=b743e676a940274f
+         index=3 banmai     size=65580  duration=1.486s sha256=62b3b4ec9df7e2a9
+       PiperService.synthesize() (the exact Preview Voice call) > log
+         size=108588 duration=2.461s sr=22050 ch=1
+     No UnicodeEncodeError, no Traceback, and every duration matches the
+     PYTHONIOENCODING=utf-8 figures from sections 7-10 (2.485-2.624 s) rather than
+     the garbled ~4.75 s. `[PIPER] CMD` still contains no `--espeak-voice`.
+
+================================================================================
+13. FINDINGS THAT WERE RECORDED AND ARE NOW RESOLVED
+================================================================================
+FINDING 1 (pre-existing test bug) - FIXED in 12.3
+  PiperExactTextTest.test_different_voices_resolve_different_models unpacked 3
+  values from a 4-value helper. Now unpacks 4. Suite is green.
+
+FINDING 2 (the real cause of the wrong audio) - FIXED in 12.1 and 12.2
+  The application wrote UTF-8 bytes while Piper decoded stdin with the locale
+  encoding (cp1252 here), so the mojibake was phonemised. Measured on identical
+  UTF-8 stdin bytes:
+      PYTHONIOENCODING=utf-8 : size=109612  duration=2.485s  (correct)
+      default cp1252 locale  : size=209452  duration=4.748s  (garbled)
+      application subprocess call, default env: exit 0, 209964 bytes, 4.760s
+  and the application additionally crashed in its own print at line 479 with
+  UnicodeEncodeError when stdout was redirected. Both causes are fixed; the default
+  environment now produces 2.461-2.601 s of correct Vietnamese audio with no
+  environment variable set.
+
+STILL OPEN, deliberately not touched (outside this work):
+  - Preview Voice GUI click and audio playback: NOT RUN, no interactive GUI
+    available. The Piper call it makes is verified directly (section 12.5).
+  - PLAN 17 items left as found: [PIPER RUNTIME] omitting PATH/command_error;
+    playback queue session guard; stale SRT/video load failure guard; Preview
+    project-context guard; find_ffmpeg is a method, not a module function.
+  - piper_version stays "unknown" - that is correct, not a bug: piper 1.8.0 has no
+    --version option, now confirmed by execution.
+  - The `test_explicit_espeak_override_does_not_reach_cli` weakness noted in
+    section 4 stands; the runtime runs cover that scenario because banmai's config
+    supplies "voice": "vi", so the removed branch was live in all of them.
+
+================================================================================
+14. FINAL SCOPE CHECK
+================================================================================
+Behaviour changes, all in services/piper_service.py:
+    1. the Piper CLI no longer receives the unsupported `--espeak-voice` argument
+    2. the Piper child process is launched with PYTHONIOENCODING=utf-8
+    3. this module's stdout/stderr are reconfigured to UTF-8 so its diagnostic
+       prints cannot abort synthesis on a legacy code page
+Test changes, all in tests/test_piper_service.py:
+    4. two stale 3-value unpacks corrected to 4 values
+    5. six additive tests in PiperChildStdioEncodingRegressionTest
+    6. imports for os, subprocess and build_piper_child_env
+Nothing else in application code was touched. No existing assertion was changed or
+weakened. No model, config, dependency, UI, FFmpeg, project, cleanup, playback,
+voice-assignment or runtime-selection change. The project remains runnable.
+Files created: plan/plan18require.txt, plan/plan18result.txt.
+Side effects of running the verification, not edits:
+  - services/__pycache__/piper_service.cpython-312.pyc regenerated by py_compile
+    (this .pyc is unfortunately tracked in git)
+  - temp/preview/*.wav written by the manual check script (its designed output
+    location; the app sweeps temp/preview on close)
+  - driver scripts were written to the OS temp directory, never into the project
+
+================================================================================
+15. STATUS SUMMARY
+================================================================================
+  Piper 1.8.0 CLI finding (2.1-2.5) ................. PASS (executed)
+  Minimal `--espeak-voice` removal .................. PASS (applied, minimal)
+  stdin text path unchanged ......................... PASS
+  `--speaker` for multi-speaker models ............... PASS (tests + code)
+  Runtime selection preserved (command_source=module)  PASS (executed)
+  py_compile services/piper_service.py .............. PASS (exit 0)
+  py_compile tests/test_piper_service.py ............ PASS (exit 0)
+  Unit tests ........................................ 71/71 PASS (0 fail/error/skip)
+  Real synthesis via application path ............... PASS
+  A/B vs direct Piper ............................... PASS
+  Old-flag regression demonstrated (0.697s vs 2.6s) .. PASS
+  Three different texts ............................ PASS
+  Batch (3 subtitles, 2 voices) ...................... PASS
+  Child stdio encoding pinned to UTF-8 .............. PASS (new, default env)
+  Diagnostic prints safe on cp1252 stdout ........... PASS (new, default env)
+  Correct audio in a DEFAULT environment ............ PASS (2.46-2.60 s, no env var)
+  Preview Voice GUI ................................ NOT RUN (no interactive GUI)
+================================================================================
+16. STOP
+================================================================================
+STOPPING. PLAN 18's objective is complete and proven, and the two follow-up bugs the
+user authorised are fixed and verified in a default environment. No PLAN 19, no
+refactoring. FFmpeg, project save/load, cleanup, playback, voice assignment and
+runtime selection untouched.
+

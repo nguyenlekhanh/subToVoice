@@ -1,0 +1,41 @@
+PLAN 15 FIX 2 REQUIREMENTS (Piper runtime selection mismatch)
+
+Suspicion: the app project is 30_2 but a runtime log showed Piper resolved
+to C:\khanh\python\30_1 subTheoVoice\.venv\Scripts\piper.EXE (the older 30_1
+environment). Verify first; do NOT assume it is the root cause.
+
+Scope: Piper runtime discovery, selection, diagnostics, focused
+runtime-selection tests, and this documentation ONLY. Do NOT modify SRT
+parsing/editing/timing, Treeview, Timeline, playback, voice assignment,
+subtitle normalization, stdin/newline behavior, TTS text logic, FFmpeg
+composition, MP4 export, Save/Load, cleanup, UI layout, dependencies,
+engines, or features. No PLAN 16, no refactoring. Keep the app runnable.
+
+1. Read plan/ history and the current Piper implementation before changing.
+2. Document current selection behavior (shutil.which first vs module second
+   vs explicit path; PATH cross-project leakage; module availability).
+3. Add concise [PIPER RUNTIME] diagnostics on resolve/invoke:
+   sys.executable, python_version, piper_module_available, piper_executable,
+   piper_command, PATH (+ probed piper_version, or piper_version=unknown,
+   never fabricated).
+4. Compare Runtime A (PATH exe) vs Runtime B (sys.executable -m piper);
+   assume neither correct; check existence/usability of both.
+5. Deterministic selection: current-env module first; PATH exe only as a
+   loudly logged fallback (never silent cross-project selection); explicit
+   override still wins; Windows-safe; no shell=True.
+6. Text/stdin/model/config/espeak/voice/batch/WAV behavior unchanged; no new
+   pronunciation workarounds.
+7. GUI-independent controlled check path (real banmai model + fixed
+   Vietnamese text) reporting interpreter, runtime, model, return code, WAV
+   facts, stderr. No batch-text changes, no new TTS architecture.
+8. Report APP RUNTIME vs MANUAL RUNTIME explicitly; mismatch confirmed only
+   by evidence, never by assumption.
+9. Focused tests: module preferred, PATH not preferred when module exists,
+   explicit config works, PATH fallback works without module, diagnostics
+   safe, no shell=True, spaces-safe paths, clear missing-Piper error. No
+   batch-test rewrites, no unrelated tests.
+10. Tests/syntax checks run if possible; spawn EFTYPE recorded honestly;
+    never claim unrun passes (NOT RUN + reason).
+11. plan/plan15fix2require.txt (this file) + plan/plan15fix2result.txt
+    (prior behavior, changes, diagnostics, test-time runtime, mismatch
+    verdict, tests run/blocked, uncertainty). No success claims w/o evidence.

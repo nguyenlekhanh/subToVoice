@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -21,6 +23,46 @@ from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 
 VOICE_DIRECTORIES = ("piper", "piper-en")
 PathLike = Union[str, Path]
+
+
+def _force_utf8_stdio() -> None:
+    """Make this module's diagnostic prints safe on a legacy code page.
+
+    Every log line below is a plain ``print()``. When stdout is redirected to a
+    file or a pipe, Python picks the locale encoding (cp1252 on many Windows
+    installs) and printing Vietnamese raises UnicodeEncodeError, which would
+    abort synthesis before Piper is even started. Reconfiguring the streams to
+    UTF-8 keeps the existing print() calls working unchanged; streams without
+    ``reconfigure`` (StringIO under a test runner, or None under pythonw) are
+    left alone.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError):
+            pass
+
+
+_force_utf8_stdio()
+
+
+def build_piper_child_env() -> dict:
+    """Environment for the Piper child process.
+
+    Piper reads the synthesis text from ``sys.stdin`` and decodes it using the
+    locale encoding. This module always writes UTF-8 bytes, so on a legacy code
+    page (cp1252) Piper would silently decode them as mojibake and phonemise the
+    garbage - a valid WAV of roughly double length and the wrong content. The
+    child's stdio encoding is therefore pinned to UTF-8 rather than inherited,
+    because it is a correctness requirement of this module's stdin contract, not
+    a user preference.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 @dataclass(frozen=True)
@@ -56,6 +98,29 @@ class PiperService:
         )
         return discover_voices(config_root, self._voice_directories)
 
+    def synthesize(
+        self,
+        text: str,
+        voice: PiperVoice,
+        output_wav: PathLike,
+        piper_cmd: Sequence[str] | None = None,
+        speaker: Optional[int] = None,
+        timeout: int = 120,
+        espeak_voice: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ) -> Path:
+        """Generate a preview WAV with the given voice (GUI-independent).
+
+        Thin compatibility wrapper around the canonical module-level
+        :func:`synthesize`, so Preview Voice keeps its API while sharing the
+        single deterministic runtime-selection path with batch synthesis.
+        """
+        return synthesize(
+            text, voice, output_wav,
+            piper_cmd=piper_cmd, speaker=speaker, timeout=timeout,
+            espeak_voice=espeak_voice, request_id=request_id,
+        )
+
 def normalize_piper_input(text: str) -> str:
     """Collapse one subtitle into a single Piper stdin line (no trailing newline).
 
@@ -69,25 +134,6 @@ def normalize_piper_input(text: str) -> str:
     cleaned = text.replace("\r\n", "\n").replace("\r", "\n").replace("\ufeff", "")
     lines = [line.strip(" \t") for line in cleaned.split("\n")]
     return " ".join(line for line in lines if line)
-
-
-def synthesize(
-        self,
-        text: str,
-        voice: PiperVoice,
-        output_wav: PathLike,
-        piper_cmd: Sequence[str] | None = None,
-        speaker: Optional[int] = None,
-        timeout: int = 120,
-        espeak_voice: Optional[str] = None,
-        request_id: Optional[str] = None,
-    ) -> Path:
-        """Generate a preview WAV with the given voice (GUI-independent)."""
-        return synthesize(
-            text, voice, output_wav,
-            piper_cmd=piper_cmd, speaker=speaker, timeout=timeout,
-            espeak_voice=espeak_voice, request_id=request_id,
-        )
 
 
 class PiperSynthesisError(Exception):
@@ -130,22 +176,133 @@ def is_piper_module_available() -> bool:
 
 
 def resolve_piper_base_command(piper_cmd: Sequence[str] | None = None) -> list[str]:
-    """Resolve the base Piper command without model/output arguments."""
+    """Resolve the base Piper command without model/output arguments.
+
+    Deterministic order: explicit override first, then the Piper module of
+    the Python interpreter running this application (``sys.executable -m
+    piper``), and only then a ``piper`` executable found through PATH. A
+    PATH executable belonging to another project environment is never
+    selected silently (see _warn_if_foreign_executable).
+    """
     if piper_cmd is not None:
         base = [str(part) for part in piper_cmd]
         if not base:
             raise PiperSynthesisError("Piper command override is empty.")
         return base
-    executable = find_piper_executable()
-    if executable:
-        return [executable]
     if is_piper_module_available():
         return [sys.executable, "-m", "piper"]
+    executable = find_piper_executable()
+    if executable:
+        _warn_if_foreign_executable(executable)
+        return [executable]
     raise PiperSynthesisError(
         "Piper runtime not found. Install the Piper CLI "
         "(a `piper` executable on PATH or the `piper-tts` Python package) "
         "to enable voice preview."
     )
+
+
+def _is_foreign_executable(executable: str) -> bool:
+    """True when the exe lives outside the current Python environment."""
+    try:
+        exe_path = str(Path(executable).resolve()).casefold()
+        prefix = str(Path(sys.prefix).resolve()).casefold()
+        base_prefix = str(Path(getattr(sys, "base_prefix", sys.prefix)).resolve()).casefold()
+    except OSError:
+        return True
+    return not (exe_path.startswith(prefix) or exe_path.startswith(base_prefix))
+
+
+def _warn_if_foreign_executable(executable: str) -> None:
+    if _is_foreign_executable(executable):
+        print(f"[PIPER RUNTIME] WARNING: selected Piper belongs to another "
+              f"environment: {executable} (current Python: {sys.executable})")
+
+
+_VERSION_CACHE: dict = {}
+_LAST_LOGGED_COMMAND_KEY = {"key": None}
+
+
+def piper_version_for_command(base_cmd: Sequence[str]) -> str:
+    """Probe `<cmd> --version`; return the version or "unknown" (cached)."""
+    key = tuple(str(part) for part in base_cmd)
+    if key in _VERSION_CACHE:
+        return _VERSION_CACHE[key]
+    version = "unknown"
+    try:
+        result = subprocess.run(
+            list(key) + ["--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0:
+            text = (result.stdout or b"").decode("utf-8", errors="replace").strip()
+            first_line = text.splitlines()[0].strip() if text.strip() else ""
+            if first_line:
+                version = first_line[:200]
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError):
+        version = "unknown"
+    _VERSION_CACHE[key] = version
+    return version
+
+
+def _command_source(command, piper_cmd) -> str:
+    if command is None:
+        return "none"
+    if piper_cmd is not None:
+        return "explicit"
+    if (command is not None and len(command) >= 2
+            and command[0] == sys.executable and command[1] == "-m"):
+        return "module"
+    return "path"
+
+
+def _describe_resolved(command, source: str, command_error: str = "") -> dict:
+    version = piper_version_for_command(command) if command is not None else "unknown"
+    info = {
+        "sys.executable": sys.executable,
+        "python_version": platform.python_version(),
+        "piper_module_available": is_piper_module_available(),
+        "piper_executable": find_piper_executable(),
+        "piper_command": command,
+        "command_source": source,
+        "command_error": command_error,
+        "piper_version": version,
+        "PATH": os.environ.get("PATH", ""),
+    }
+    print("[PIPER RUNTIME]")
+    print(f"sys.executable={info['sys.executable']}")
+    print(f"python_version={info['python_version']}")
+    print(f"piper_module_available={info['piper_module_available']}")
+    print(f"piper_executable={info['piper_executable']}")
+    print(f"piper_command={info['piper_command']}")
+    print(f"command_source={info['command_source']}")
+    print(f"piper_version={info['piper_version']}")
+    return info
+
+
+def describe_piper_runtime(piper_cmd: Sequence[str] | None = None) -> dict:
+    """Identify the actual Piper runtime; print the [PIPER RUNTIME] block."""
+    try:
+        command = resolve_piper_base_command(piper_cmd)
+        command_error = ""
+    except PiperSynthesisError as exc:
+        command = None
+        command_error = str(exc)
+    return _describe_resolved(command, _command_source(command, piper_cmd),
+                              command_error)
+
+
+def log_piper_runtime_once(base_cmd: Sequence[str],
+                           piper_cmd: Sequence[str] | None = None) -> dict:
+    """Describe the runtime the first time each distinct command is used."""
+    key = tuple(str(part) for part in base_cmd)
+    if _LAST_LOGGED_COMMAND_KEY["key"] != key:
+        _LAST_LOGGED_COMMAND_KEY["key"] = key
+        return _describe_resolved(list(key), _command_source(list(key), piper_cmd))
+    return {"piper_command": list(key), "cached": True}
 
 
 def default_config_root() -> Path:
@@ -347,12 +504,14 @@ def synthesize(
         raise PiperSynthesisError(f"Cannot create output directory: {exc}") from exc
 
     base_cmd = resolve_piper_base_command(piper_cmd)
+    log_piper_runtime_once(base_cmd, piper_cmd)
     resolved_espeak_voice = resolve_espeak_voice(voice, espeak_voice)
     resolved_speaker = speaker
     if resolved_speaker is None and (voice.num_speakers or 0) > 1:
         resolved_speaker = 0
 
     stdin_payload = (normalized + "\n").encode("utf-8")
+    _force_utf8_stdio()
     print("[PIPER]")
     print(f"request_id={request_id}")
     print(f"voice={voice.name} model={model_path}")
@@ -365,10 +524,13 @@ def synthesize(
     print(f"text_len={len(normalized)} stdin_bytes={len(stdin_payload)}")
     print(f"stdin_ends_with_newline={stdin_payload.endswith(chr(10).encode())}")
 
+    # piper-tts has no --espeak-voice option: the eSpeak voice is read from the
+    # model config itself (config["espeak"]["voice"]). Passing the unknown flag
+    # would be swallowed by parse_known_args() and then synthesised as the input
+    # text, so it must never be placed on the command line. The resolved value is
+    # still logged above for diagnostics.
     cmd = list(base_cmd) + ["--model", str(model_path)]
     cmd += ["--config", str(config_path)]
-    if resolved_espeak_voice:
-        cmd += ["--espeak-voice", resolved_espeak_voice]
     cmd += ["--output_file", str(output_path)]
     if resolved_speaker is not None:
         cmd += ["--speaker", str(resolved_speaker)]
@@ -382,6 +544,7 @@ def synthesize(
             stderr=subprocess.PIPE,
             timeout=timeout,
             check=False,
+            env=build_piper_child_env(),
         )
     except FileNotFoundError as exc:
         raise PiperSynthesisError(

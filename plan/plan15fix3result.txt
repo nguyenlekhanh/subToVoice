@@ -1,0 +1,56 @@
+PLAN 15 FIX 3 RESULT (restore PiperService.synthesize)
+
+1. Regression discovered
+Preview Voice failed with 'PiperService' object has no attribute
+'synthesize', called from app/ui.py _preview_worker via
+self.piper_service.synthesize(subtitle_text, voice, output_path,
+request_id=request_id), expecting a Path back.
+
+2. Why synthesize() was missing
+During PLAN 15 FIX 2 edits the PiperService.synthesize method lost its
+indentation and landed at module level as `def synthesize(self, ...)` (file
+lines 76-92). The class kept only __init__/discover_voices, so attribute
+lookup failed. The orphaned body was also a latent infinite-recursion trap
+(it called global synthesize, i.e. itself at that point) and a duplicate of
+the real canonical module-level synthesize (since overwritten at its later
+definition). Verified by read-back, not assumed.
+
+3. What was restored
+services/piper_service.py only: the orphaned lines 76-92 block deleted;
+PiperService.synthesize(self, text, voice, output_wav, piper_cmd=None,
+speaker=None, timeout=120, espeak_voice=None, request_id=None) -> Path
+re-added properly indented, delegating 1:1 to the canonical module-level
+synthesize(). One canonical command implementation; no duplication.
+
+4. How Preview Voice now reaches Piper
+_preview_worker -> PiperService.synthesize(...) -> module synthesize() ->
+resolve_piper_base_command (FIX 2 order) -> subprocess Piper. app/ui.py
+needed ZERO changes; batch path (module function direct) untouched.
+
+5. FIX 2 runtime selection preserved
+Order verified intact by read-back: explicit override, then
+sys.executable -m piper when the module is usable, then PATH exe with the
+foreign-environment WARNING, else clear error. [PIPER RUNTIME] block,
+version probe/cache, and log-once-per-command hook all still in place and
+reached through the restored method (it forwards request_id).
+
+6. Tests run / not run
+NOT RUN. `python -m py_compile services/piper_service.py` and
+`python -m py_compile tests/test_piper_service.py`: blocked, each returned
+`spawn EFTYPE`. No unit test executed here.
+New PiperServiceSynthesizeRegressionTest (4 tests: method exists/callable;
+preview-shaped call incl. request_id reaches implementation and returns a
+file; FIX 2 module-over-PATH selection + no-shell + diagnostics through the
+method; explicit override passthrough) written but UNRUN. Existing batch
+suites untouched and signature-compatible.
+
+7. Manual verification result
+NOT RUN (same blocked execution environment; no GUI/synthesis possible
+here). User-side check: Preview Voice should no longer show the attribute
+error, should log [PIPER RUNTIME], and should generate + play a WAV.
+
+8. Remaining issue
+Static-only verification: read-back confirms structure (one indented
+method, one canonical module function, intact FIX 2 code), but compile,
+tests, and the manual preview run all still need a working Python on the
+user's side.

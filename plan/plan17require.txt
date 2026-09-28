@@ -1,0 +1,87 @@
+PLAN 17 REQUIREMENTS (Environment, Compile, Test, and Piper Runtime Verification ONLY)
+
+This plan is VERIFICATION ONLY. Do NOT modify application source code, tests, configuration, or dependencies. Do NOT fix bugs automatically. Record exact commands and actual results. STOP after creating plan/plan17require.txt and plan/plan17result.txt.
+
+==================================================
+1. PROJECT HISTORY
+==================================================
+- Read all plan/*require.txt and plan/*result.txt through PLAN 16 and all PLAN 15 FIX logs. Treat current code as source of truth.
+- Pay special attention to: PLAN 9 discovery, PLAN 10 Preview Voice, PLAN 11 Batch Voice Generation, PLAN 12 FFmpeg Composition, PLAN 13 Final MP4 Export, PLAN 14 Project Save/Load, PLAN 15 Cleanup/Error Handling, PLAN 15 FIX 2 runtime selection, PLAN 15 FIX 3 PiperService.synthesize() regression, PLAN 16 Per-Subtitle Voice Assignment.
+
+==================================================
+2. UV ENVIRONMENT VERIFICATION
+==================================================
+Inspect: pyproject.toml, uv.lock, .venv (if present). Run only diagnostic commands:
+- uv --version
+- uv run python --version
+- uv run python -c "import sys; print(sys.executable)"
+- uv run python -c "import sys; print(sys.version)"
+- uv run python -m piper --help
+- uv run python -m piper --version
+- where python (Windows)
+- where piper (Windows)
+If where piper points outside project env, report it. No environment changes.
+
+==================================================
+3. PYTHON COMPILE CHECK
+==================================================
+Using project environment (uv run):
+- uv run python -m py_compile main.py
+- uv run python -m py_compile services/piper_service.py services/ffmpeg_service.py services/project_service.py services/cleanup_service.py services/srt_service.py services/video_service.py services/tts_service.py app/state.py app/ui.py models/subtitle.py
+- uv run python -m py_compile tests/test_piper_service.py tests/test_per_subtitle_voice.py tests/test_cleanup_service.py tests/test_error_handling.py tests/test_ffmpeg_service.py tests/test_ffmpeg_export.py tests/test_project_service.py
+Record exact file+error if any fails; do NOT edit files; STOP step on failure.
+
+==================================================
+4. IMPORT CHECK
+==================================================
+- uv run python -c "from services.piper_service import PiperService, PiperVoice, synthesize; print('PIPER IMPORT OK')"
+- uv run python -c "import app.ui; print('UI IMPORT OK')"
+- uv run python -c "import app.state; print('STATE IMPORT OK')"
+- uv run python -c "import services.ffmpeg_service; print('FFMPEG IMPORT OK')"
+Record actual results.
+
+==================================================
+5. PIPER RUNTIME VERIFICATION
+==================================================
+- uv run python tests/manual_piper_runtime_check.py (do NOT modify script)
+Capture: sys.executable, Python version, piper_module_available, piper_executable, piper_command, command_source, piper_version, PATH info, model path, config path, eSpeak voice, Piper return code, output WAV path, WAV size, WAV duration, SHA256 if reported. Expect command_source=module by default. Report actual result.
+
+==================================================
+6. DIRECT PIPER VS APPLICATION RUNTIME
+==================================================
+Do not modify code. After manual script, start GUI:
+- uv run python main.py
+Test ONLY Preview Voice: load SRT, select one subtitle, select intended Piper voice, click Preview Voice. Capture [PIPER RUNTIME] block, whether WAV generated, whether WAV plays, and compare with manual_piper_runtime_check (Python executable, Piper command, command_source, Piper version, model, config, eSpeak voice, output WAV, duration, size). Report differences; do not fix.
+
+==================================================
+7. PIPER SYNTHESIS REGRESSION TEST
+==================================================
+Identify test classes in tests/test_piper_service.py (PiperRuntimeSelectionTest, PiperServiceSynthesizeRegressionTest). Run tests via project's test mechanism (use unittest discover if no pytest configured). Do not install dependencies. Report totals (passed/failed/errors/skipped), exact failure messages. Record NOT RUN with reason if cannot execute.
+
+==================================================
+8. EXISTING TEST SUITE
+==================================================
+If runnable, run full suite (e.g. uv run python -m unittest discover -s tests -v). Report complete summary. Skipped = reported as skipped. Cannot start = NOT reported as passed.
+
+==================================================
+9. FFmpeg ENVIRONMENT VERIFICATION
+==================================================
+- where ffmpeg (Windows), where ffprobe
+- ffmpeg -version, ffprobe -version (if available)
+- uv run python -c "from services.ffmpeg_service import find_ffmpeg; print(find_ffmpeg())"
+Report availability. Do not install FFmpeg.
+
+==================================================
+10. PLAN 16 VOICE ASSIGNMENT STATIC VERIFICATION
+==================================================
+Static only: verify Subtitle.voice exists, Voice column exists, per-subtitle selection, Preview uses subtitle voice, Batch uses each subtitle's voice, unknown voices not silently substituted, voice changes invalidate audio/composed/final, project save/load preserves per-subtitle voice, FocusOut race fix present.
+
+==================================================
+11. STALE RESULT / SHUTDOWN STATIC CHECK
+==================================================
+Static only: inspect request IDs/batch IDs/project guards (SRT/video/playback/preview/batch/compose/export/project load), shutdown handling. Report POTENTIAL ISSUE - NOT FIXED if suspicious.
+
+==================================================
+12. PLAN 17 RESULT LOGS
+==================================================
+Create plan/plan17require.txt (this file) and plan/plan17result.txt recording every command executed, actual output/results, compile/import/test/runtime/FFmpeg/static verification results, failures/skipped/blocked, potential issues. Never write PASS unless actually passed. Use NOT RUN with reason when not executed. STOP after creating both files. No code changes.

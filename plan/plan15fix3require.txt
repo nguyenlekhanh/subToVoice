@@ -1,0 +1,46 @@
+PLAN 15 FIX 3 REQUIREMENTS (restore PiperService.synthesize)
+
+Symptom: Preview Voice fails with
+'PiperService' object has no attribute 'synthesize'.
+
+Scope: restore the public PiperService.synthesize(...) compatibility API
+required by the existing Preview Voice caller; connect it to the PLAN 15
+FIX 2 deterministic runtime-selection implementation; focused regression
+tests; this documentation. Do NOT redesign Piper, change batch behavior,
+touch SRT/editing/timing/Timeline/playback/text/Unicode/stdin/newline/
+pronunciation/assignment/FFmpeg/MP4/projects/cleanup/UI/new dependencies or
+engines. No PLAN 16, no unrelated refactoring. Keep the app runnable.
+
+1. Read plan/ history, current piper_service/ui/state; search every
+synthesize(/PiperService/Preview Voice use; determine the exact signature
+Preview Voice expects and what removed the method. No guessing.
+2. Restore public PiperService.synthesize(...) compatible with the Preview
+caller (args + Path return); fix the service layer, not Preview Voice.
+3. Restored method MUST use FIX 2 order: explicit override, then
+sys.executable -m piper when usable, then PATH fallback. Never restore
+shutil.which-first behavior. Preview and Batch share one deterministic path.
+4. Preserve the [PIPER RUNTIME] block and fields (sys.executable,
+python_version, piper_module_available, piper_executable, selected_command,
+source, piper_version, PATH); reuse FIX 2 helpers, no duplication.
+5. Preview behavior otherwise unchanged (selected subtitle/voice, temp WAV,
+worker/queue playback, request/stale protection, error/status handling).
+6. Synthesis behavior unchanged (model/config/espeak-voice/speaker/output/
+Unicode/multiline/stdin/encoding/subprocess/timeout/returncode/stderr);
+notably NO newline changes; not a pronunciation fix; no text changes.
+7. generate_batch_voices() behavior unchanged (progress/IDs/cancellation/
+failures/validation/mappings/naming/assignment) unless a tiny refactor is
+needed to share the restored implementation.
+8. One canonical synthesis path: PiperService.synthesize() delegates to the
+existing canonical implementation; no duplicate command builders.
+Preview -> method -> canonical implementation -> FIX 2 selection -> Piper.
+9. Regression tests: method exists/callable; preview-shaped args reach the
+implementation; FIX 2 selection used; explicit override wins; module beats
+PATH; diagnostics emitted; no shell=True; batch tests still compatible.
+10. Run tests + py_compile honestly; spawn EFTYPE recorded exactly; PASSED/
+FAILED/NOT RUN separated; no unrun passes claimed.
+11. Manual Preview Voice check if executable (video+SRT+subtitle+voice,
+old error gone, [PIPER RUNTIME] present, WAV generated+played); else NOT
+RUN with reason.
+12. plan/plan15fix3require.txt (this file) + plan/plan15fix3result.txt
+(regression, cause, restoration, Preview path, FIX 2 preservation, tests
+run/not run, manual result, remaining issues). Previous plan files untouched.
